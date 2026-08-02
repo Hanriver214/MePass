@@ -304,7 +304,8 @@ private fun PresetPickerDialog(
     onDismiss: () -> Unit,
     onConfirm: (Set<String>) -> Unit
 ) {
-    val selectedIds = remember { mutableStateSetOf<String>() }
+    // 用 SnapshotStateList + toSet，避免依赖 Compose 1.6+ 的 mutableStateSetOf
+    val selectedList = remember { mutableStateListOf<String>() }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -319,10 +320,13 @@ private fun PresetPickerDialog(
                             .padding(vertical = 4.dp)
                     ) {
                         Checkbox(
-                            checked = selectedIds.contains(q.id),
+                            checked = selectedList.contains(q.id),
                             onCheckedChange = { checked ->
-                                if (checked) selectedIds.add(q.id)
-                                else selectedIds.remove(q.id)
+                                if (checked) {
+                                    if (!selectedList.contains(q.id)) selectedList.add(q.id)
+                                } else {
+                                    selectedList.remove(q.id)
+                                }
                             }
                         )
                         Spacer(Modifier.width(8.dp))
@@ -342,8 +346,8 @@ private fun PresetPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selectedIds) }) {
-                Text("添加 (${selectedIds.size})")
+            TextButton(onClick = { onConfirm(selectedList.toSet()) }) {
+                Text("添加 (${selectedList.size})")
             }
         },
         dismissButton = {

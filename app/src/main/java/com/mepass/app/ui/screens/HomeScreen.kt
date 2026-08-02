@@ -97,7 +97,7 @@ fun HomeScreen(
                         Text("名称：${activeTemplate.name}")
                         Text("问题数：${activeTemplate.thresholdConfig.totalQuestions}")
                         Text("恢复门限：${activeTemplate.thresholdConfig.threshold} / ${activeTemplate.thresholdConfig.totalQuestions}")
-                        Text("创建时间：${java.text.SimpleDateFormat.getDateTimeInstance().format(new java.util.Date(activeTemplate.createdAt))}")
+                        Text("创建时间：${java.text.SimpleDateFormat.getDateTimeInstance().format(java.util.Date(activeTemplate.createdAt))}")
                         Text("完整性校验：${if (com.mepass.app.template.IntegrityManager.verifyIntegrity(activeTemplate)) "✓ 通过" else "✗ 失败"}")
                         Spacer(modifier = Modifier.height(12.dp))
                         OutlinedButton(

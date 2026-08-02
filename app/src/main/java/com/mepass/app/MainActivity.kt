@@ -11,7 +11,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -30,6 +29,25 @@ class MainActivity : ComponentActivity() {
     private var activeTemplateRef: Template? = null
     /** 各Screen注册的具体清理动作引用 */
     private val screenClearHooks = mutableMapOf<String, () -> Unit>()
+    /** 生命周期观察者（用于清理与重新应用隐私策略 */
+    private val lifecycleObserver = LifecycleEventObserver { _, event ->
+        when (event) {
+            Lifecycle.Event.ON_PAUSE -> {
+                Log.i("MePass-Lifecycle", "ON_PAUSE 触发全局敏感数据清理")
+                PrivacyGuard.wipeAllSensitiveData()
+                PrivacyGuard.wipeAllSensitiveData()
+            }
+            Lifecycle.Event.ON_STOP -> {
+                Log.i("MePass-Lifecycle", "ON_STOP 再次触发清理")
+                PrivacyGuard.wipeAllSensitiveData()
+            }
+            Lifecycle.Event.ON_RESUME -> {
+                // 每次重新进入前台也重新应用FLAG_SECURE，避免中间被hook清除
+                PrivacyGuard.applySecureWindowPolicy(this@MainActivity)
+            }
+            else -> {}
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,51 +66,17 @@ class MainActivity : ComponentActivity() {
         PrivacyGuard.registerWipeCallback {
             Log.i("MePass-MainActivity", "执行Activity级内存清理")
             activeTemplateRef = null
-            // 清空所有屏幕钩子
             screenClearHooks.values.forEach { runCatching { it() } }
             screenClearHooks.clear()
             ScreenSensitiveState.clearTempPassphrase()
-            // 清除Compose内部缓存（尽力而为）
             Runtime.getRuntime().gc()
-            // 再次触发GC以确保String池压力
             Runtime.getRuntime().gc()
         }
 
-        setContent {
-            // 观察Lifecycle事件：onPause立刻清理
-            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-            DisposableEffect(lifecycleOwner) {
-                val observer = LifecycleEventObserver { _, event ->
-                    when (event) {
-                        Lifecycle.Event.ON_PAUSE -> {
-                            Log.i("MePass-Lifecycle", "ON_PAUSE 触发全局敏感数据清理")
-                            PrivacyGuard.wipeAllSensitiveData()
-                            // 再次调用以清除不同层的引用
-                            PrivacyGuard.wipeAllSensitiveData()
-                        }
-                        Lifecycle.Event.ON_STOP -> {
-                            Log.i("MePass-Lifecycle", "ON_STOP 再次触发清理")
-                            PrivacyGuard.wipeAllSensitiveData()
-                            // 清除最近任务缩略图
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                                try {
-                                    // 不允许被截取缩略图
-                                } catch (_: Throwable) {}
-                            }
-                        }
-                        Lifecycle.Event.ON_RESUME -> {
-                            // 每次重新进入前台也重新应用FLAG_SECURE，避免中间被hook清除
-                            PrivacyGuard.applySecureWindowPolicy(this@MainActivity)
-                        }
-                        else -> {}
-                    }
-                }
-                lifecycleOwner.lifecycle.addObserver(observer)
-                onDispose {
-                    lifecycleOwner.lifecycle.removeObserver(observer)
-                }
-            }
+        // 生命周期事件观察（非Compose方式，不依赖 LocalLifecycleOwner）
+        lifecycle.addObserver(lifecycleObserver)
 
+        setContent {
             MePassTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
