@@ -32,12 +32,18 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Setup Gradle (fix wrapper if missing jar)
+      - name: Setup Gradle wrapper jar (official download)
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "=== gradle-wrapper.jar 不存在，使用系统gradle重新生成wrapper"
-            gradle wrapper --gradle-version 8.5 --no-daemon
+            echo "=== gradle-wrapper.jar 不存在，直接从官方 Gradle 8.7 分发包中提取"
+            mkdir -p /tmp/gradle-dl
+            curl -fsSL --retry 3 -o /tmp/gradle-dl/gradle.zip \
+              "https://services.gradle.org/distributions/gradle-8.7-bin.zip"
+            (cd /tmp/gradle-dl && unzip -q gradle.zip)
+            cp -v /tmp/gradle-dl/gradle-8.7/lib/gradle-wrapper-*.jar gradle/wrapper/gradle-wrapper.jar
+            rm -rf /tmp/gradle-dl
           fi
+          [ -s gradle/wrapper/gradle-wrapper.jar ] || { echo "ERROR: gradle-wrapper.jar 仍然不存在"; exit 1; }
           chmod +x ./gradlew
 
       - name: Run Lint
@@ -74,11 +80,17 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Setup Gradle wrapper
+      - name: Setup Gradle wrapper jar (official download)
         run: |
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            gradle wrapper --gradle-version 8.5 --no-daemon
+            mkdir -p /tmp/gradle-dl
+            curl -fsSL --retry 3 -o /tmp/gradle-dl/gradle.zip \
+              "https://services.gradle.org/distributions/gradle-8.7-bin.zip"
+            (cd /tmp/gradle-dl && unzip -q gradle.zip)
+            cp -v /tmp/gradle-dl/gradle-8.7/lib/gradle-wrapper-*.jar gradle/wrapper/gradle-wrapper.jar
+            rm -rf /tmp/gradle-dl
           fi
+          [ -s gradle/wrapper/gradle-wrapper.jar ] || { echo "ERROR: gradle-wrapper.jar 仍然不存在"; exit 1; }
           chmod +x ./gradlew
 
       # ---- Release 构建（开启 R8 混淆 + 优化 ----
