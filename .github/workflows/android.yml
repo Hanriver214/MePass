@@ -8,6 +8,12 @@ on:
   release:
     types: [ created ]
 
+permissions:
+  contents: write          # 写 Release assets / tag
+  id-token: write        # Sigstore Cosign 需要 OIDC 签发无密钥签名
+  actions: read
+  issues: read
+
 jobs:
   build:
     name: Build & Test
@@ -16,6 +22,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 拉取完整历史用于可验证构建溯源
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -24,17 +32,22 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
+      - name: Setup Gradle (fix wrapper if missing jar)
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "=== gradle-wrapper.jar 不存在，使用系统gradle重新生成wrapper"
+            gradle wrapper --gradle-version 8.5 --no-daemon
+          fi
+          chmod +x ./gradlew
 
       - name: Run Lint
-        run: ./gradlew lintDebug --stacktrace
+        run: ./gradlew lintDebug --stacktrace --no-daemon
 
       - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: ./gradlew testDebugUnitTest --stacktrace --no-daemon
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -43,13 +56,16 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
 
   release:
-    name: Build Release APK (on Tag / Release)
+    name: Build Release APK + Sigstore(Cosign) Sign + Publish
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    needs: build
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -58,22 +74,121 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
+      - name: Setup Gradle wrapper
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.5 --no-daemon
+          fi
+          chmod +x ./gradlew
 
+      # ---- Release 构建（开启 R8 混淆 + 优化 ----
       - name: Build Release APK
-        run: ./gradlew assembleRelease --stacktrace
+        run: ./gradlew assembleRelease --stacktrace --no-daemon
 
-      - name: Upload Release APK
+      # ---- 保存混淆 mapping（用于安全团队 / 用户验证 ----
+      - name: Collect release artifacts （APK + mapping + R8)
+        run: |
+          mkdir -p release_out
+          cp -v app/build/outputs/apk/release/*.apk release_out/
+          cp -v app/build/outputs/mapping/release/mapping.txt release_out/mapping.txt 2>/dev/null || echo "[warn] mapping.txt 不存在（可能是 R8 未输出）
+          ls -lah release_out/
+
+      # ---- SHA-256 校验和（用户可本地比对 APK 哈希）----
+      - name: Generate SHA-256 Checksums
+        run: |
+          cd release_out
+          for f in *.apk mapping.txt; do
+            if [ -f "$f" ]; then
+              sha256sum "$f" | tee -a SHA256SUMS.txt
+            fi
+          done
+          echo "=== Checksums 内容:"
+          cat SHA256SUMS.txt
+          cp SHA256SUMS.txt ../SHA256SUMS.txt || true
+
+      # ---- 安装 Cosign (Sigstore) 客户端 ----
+      - name: Install Cosign (Sigstore)
+        uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: 'v2.4.1'
+
+      # ---- Sigstore 无密钥签名（基于 GitHub Actions OIDC 身份）----
+      # 产生 .sig 签名文件 + Rekor 透明日志条目
+      - name: Sign APK and Checksums with Cosign (Keyless / Sigstore)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cd release_out
+          APK_FILE=$(ls *.apk | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+              echo "没有找到 APK，跳过签名"
+              exit 1
+          fi
+          echo "对 APK 签名: $APK_FILE"
+          cosign sign-blob --yes "$APK_FILE" \
+            --output-signature "${APK_FILE}.sig" \
+            --output-certificate "${APK_FILE}.pem"
+
+          echo "对 SHA256SUMS.txt 签名"
+          cosign sign-blob --yes SHA256SUMS.txt \
+            --output-signature SHA256SUMS.txt.sig \
+            --output-certificate SHA256SUMS.txt.pem
+          ls -lah
+
+      # ---- 上传 Release 资产 ----
+      - name: Upload Release APK + Signature Artifacts (供测试下载)
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: app-release-assets
+          path: release_out/
 
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
+      # ---- 向 GitHub Release 附加所有资产 ----
+      - name: Upload all Assets to GitHub Release
+        uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: app/build/outputs/apk/release/*.apk
+          files: |
+            release_out/*.apk
+            release_out/*.apk.sig
+            release_out/*.pem
+            release_out/SHA256SUMS.txt
+            release_out/SHA256SUMS.txt.sig
+            release_out/SHA256SUMS.txt.pem
+            release_out/mapping.txt
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+
+      # ---- 用户验证指引：输出到 Step Summary 便于用户复制验证命令 ----
+      - name: Emit Verification Instructions
+        run: |
+          cat <<'EOF' >> $GITHUB_STEP_SUMMARY
+          # MePass Release 可验证性指引
+          ## 1. 如何验证 APK 完整性（SHA-256）
+          ```bash
+          sha256sum MePass-*.apk
+          # 结果与 SHA256SUMS.txt 记录进行对比
+          ```
+
+          ## 2. 如何使用 Cosign (Sigstore) 验证签名（无密钥）
+          ```bash
+          # 安装 Cosign: https://docs.sigstore.dev/cosign/system_config/installation/
+          export COSIGN_EXPERIMENTAL=1
+          cosign verify-blob MePass-*.apk \
+            --signature MePass-*.apk.sig \
+            --certificate MePass-*.apk.pem \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp 'https://github.com/${{ github.repository }}/.github/workflows/.*@refs/tags/.*'
+          ```
+          # 若显示 "Verified OK" 即说明：
+          # - APK 确实来自本仓库 GitHub Actions 从本 tag 构建产出
+          # - APK 未被篡改
+          # - 对应日志可在 Rekor Transparency Log (https://search.sigstore.dev/) 上公开审计
+
+          ## 3. 如何确认代码混淆（R8）已开启并生效
+          ```
+          1) 下载 mapping.txt（本 Release 资产）
+          2) 使用 Apktool / jadx 反编译 release APK，对比类名：混淆后名称 a.b.c 与 mapping.txt，
+             可以看到源类名 -> 混淆类名的映射，证明 R8 已执行
+          3) 源仓库中 classes.dex 体积显著小于 debug apk（debug 未混淆构建）
+          ```
+          EOF

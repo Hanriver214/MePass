@@ -31,6 +31,18 @@ object Argon2Manager {
 
     private val secureRandom = SecureRandom()
 
+    // 4 类字符池，每类字符都经过可读性筛选：
+    //   - 字母：剔除 I, O, l（与数字 1, 0 易混淆）
+    //   - 数字：剔除 0, 1
+    //   - 符号：仅保留形状独特、不会与字母数字混淆的种类（去掉 ` | \ ~ 等边界不清的符号）
+    private const val PASSPHRASE_MIN_LEN = 14
+    private const val PASSPHRASE_MAX_LEN = 16
+    private const val UPPERCASE = "ABCDEFGHJKLMNPQRSTUVWXYZ"     // 去 I,O
+    private const val LOWERCASE = "abcdefghijkmnopqrstuvwxyz"   // 去 l
+    private const val DIGITS    = "23456789"                      // 去 0,1
+    // 22 种高辨识度符号：形状独特，各自视觉差异大，无歧义、无混淆
+    private const val SYMBOLS   = "!@#\$%^&*()-_=+[]{};:,./<>"
+
     /**
      * 对答案进行哈希（用于验证数据存储）
      * 返回 Argon2 编码字符串（包含盐、参数、哈希）
@@ -103,27 +115,146 @@ object Argon2Manager {
     }
 
     /**
-     * 从主秘密字节派生人类可读的 passphrase
-     * 使用 EFF 长单词列表风格的单词表（内嵌简化版）
+     * 从主秘密字节派生 passphrase（14~16 字符，具体长度由熵决定）
+     *
+     * 算法流程（关键：先保证配额 → 再洗牌 → 后处理可读性，避免破坏计数）：
+     *   1. 用 2 位熵在 [14, 15, 16] 三种长度中挑一个
+     *   2. 为 4 类字符各自分配至少 3 个名额，剩余名额随机分配
+     *   3. 严格按每类配额从熵中挑出字符（先凑齐数量，不做跨类替换）
+     *   4. Fisher–Yates 整体洗牌
+     *   5. 若存在 >2 个连续同类字符，通过"与不同类邻居交换"打破连续（不改变字符种类数量）
+     *   6. 兜底：确保 4 类都出现（其实第3步已保证，此处仅为极度保守）
+     *
+     * 满足用户三大要求：
+     *  1. 字符种类尽可能多（4 类字符：大写 / 小写 / 数字 / 符号，每类至少 3 次）
+     *  2. 长度 14 ~ 16 位之间（由 masterSecret 熵位决定，3 种长度都可能出现）
+     *  3. 全部字符均经过高辨识度筛选，无 0/1/I/O/l/`/|\~ 等易混淆字符
      */
     fun derivePassphrase(masterSecret: ByteArray): String {
-        val hash = sha256(masterSecret)
-        // 每个单词需要 11 位熵，12个单词需要 132 位，用两次 SHA-256 级联得到足够熵
-        val extendedEntropy = hash + sha256(hash + byteArrayOf(0x01))
-        val words = mutableListOf<String>()
-        for (i in 0 until PASSPHRASE_WORD_COUNT) {
-            val wordIndex = extract11Bits(extendedEntropy, i * 11)
-            words.add(WordList.getWord(wordIndex))
+        // 使用充足的熵池
+        val h1 = sha512(masterSecret)
+        val h2 = sha512(h1 + sha256(masterSecret))
+        val entropy = ByteArray(128)
+        h1.copyInto(entropy, 0, 0, 64)
+        h2.copyInto(entropy, 64, 0, 64)
+        var bitCursor = 0
+
+        // ===== 第 1 步：长度选择 =====
+        val lenChoice = extractBits(entropy, bitCursor, 2).let {
+            when (it and 0b11) {
+                0b00, 0b01 -> PASSPHRASE_MIN_LEN            // 14 (50%)
+                0b10        -> PASSPHRASE_MIN_LEN + 1        // 15 (25%)
+                else        -> PASSPHRASE_MAX_LEN            // 16 (25%)
+            }
         }
-        return words.joinToString("-")
+        bitCursor += 2
+
+        // ===== 第 2 步：4 类配额分配（每类至少 3 个） =====
+        val perCategoryMin = 3
+        val counts = IntArray(4) { perCategoryMin }
+        val remain = lenChoice - perCategoryMin * 4   // 14→2, 15→3, 16→4
+        repeat(remain) {
+            val cat = extractBits(entropy, bitCursor, 2) and 0b11
+            counts[cat] += 1
+            bitCursor += 2
+        }
+
+        val categories = listOf(UPPERCASE, LOWERCASE, DIGITS, SYMBOLS)
+
+        // ===== 第 3 步：严格按配额从每类中挑字符（保证数量，不跨类替换） =====
+        val chars: MutableList<Pair<Char, Int>> = ArrayList(lenChoice)  // Pair(字符, 类别编号)
+        for (cat in 0 until 4) {
+            val pool = categories[cat]
+            repeat(counts[cat]) {
+                val pick = pool[extractBits(entropy, bitCursor, 8) % pool.length]
+                bitCursor += 8
+                chars.add(pick to cat)
+            }
+        }
+        // 断言：字符总数等于目标长度（防止逻辑错误）
+        check(chars.size == lenChoice) { "内部错误：挑出字符数 ${chars.size} != 目标 $lenChoice" }
+
+        // ===== 第 4 步：Fisher–Yates 整体洗牌（确定性、基于熵） =====
+        for (i in chars.size - 1 downTo 1) {
+            val j = extractBits(entropy, bitCursor, 8) % (i + 1)
+            bitCursor += 8
+            val tmp = chars[i]; chars[i] = chars[j]; chars[j] = tmp
+        }
+
+        // ===== 第 5 步：后处理 —— 消除超过 2 个的连续同类字符（只交换位置，不改变字符集/数量） =====
+        // 策略：从左向右扫描，发现连续 3 个及以上同类时，
+        //       在剩余区间内找一个不同类字符进行交换；若找不到就扫描整个字符串找"异类邻居"互换。
+        var safety = 0
+        var i = 2
+        while (i < chars.size && safety < lenChoice * 4) {
+            safety++
+            val (_, c0) = chars[i - 2]
+            val (_, c1) = chars[i - 1]
+            val (_, c2) = chars[i]
+            if (c0 == c1 && c1 == c2) {
+                // 位置 i-2,i-1,i 是连续 3 个同类 → 尝试把位置 i-1 或 i 跟后面异类交换
+                val badCat = c2
+                var swapTarget = -1
+                // 先在 i+1..end 找异类
+                for (k in i + 1 until chars.size) {
+                    if (chars[k].second != badCat) { swapTarget = k; break }
+                }
+                // 若后面没有异类，在 0..i-3 找异类（避免刚好又造成左边三连）
+                if (swapTarget < 0) {
+                    for (k in 0..i - 3) {
+                        if (chars[k].second != badCat
+                            && (k == 0 || chars[k - 1].second != badCat)) {
+                            swapTarget = k; break
+                        }
+                    }
+                }
+                if (swapTarget >= 0) {
+                    // 选择与"连续序列中部"(i-1) 交换，通常更有利于打断连续
+                    val tmp = chars[i - 1]; chars[i - 1] = chars[swapTarget]; chars[swapTarget] = tmp
+                    // 交换后回退一格，防止在 swapTarget 附近又产生新三连
+                    i = (i - 1).coerceAtLeast(2)
+                    continue
+                }
+            }
+            i++
+        }
+
+        // ===== 第 6 步：极度保守兜底 —— 替换保证 4 类至少各出现 1 次（实际第 3 步已保证） =====
+        for ((c, pool) in categories.withIndex()) {
+            val foundAny = chars.any { it.second == c }
+            if (!foundAny) {
+                // 从"出现次数最多且 >3 的类别"里找一个位置，替换为缺失类别字符
+                var victimCat = -1
+                for (cc in 0 until 4) {
+                    val ccCount = chars.count { it.second == cc }
+                    if (ccCount > perCategoryMin && (victimCat < 0 || ccCount > chars.count { it.second == victimCat }))
+                        victimCat = cc
+                }
+                if (victimCat < 0) victimCat = (0 until 4).first { cc -> cc != c }
+                val firstVictimIdx = chars.indexOfFirst { it.second == victimCat }
+                if (firstVictimIdx >= 0) {
+                    val replaceCh = pool[extractBits(entropy, 2048 + c * 16, 8) % pool.length]
+                    chars[firstVictimIdx] = replaceCh to c
+                }
+            }
+        }
+
+        // ===== 收尾：构造输出字符串并清理敏感内存 =====
+        val out = CharArray(lenChoice) { idx -> chars[idx].first }
+        val result = String(out)
+        out.fill('\u0000')
+        chars.forEach { it -> /* chars 持有的 Char 已是值拷贝，无需额外 wipe */ }
+        chars.clear()
+        entropy.fill(0)
+        return result
     }
 
     /**
-     * 从字节数组中提取 11 位无符号整数
+     * 从字节数组中提取 n 位无符号整数（最多 16 位）
      */
-    private fun extract11Bits(data: ByteArray, bitOffset: Int): Int {
+    private fun extractBits(data: ByteArray, bitOffset: Int, bits: Int): Int {
         var value = 0
-        for (i in 0 until 11) {
+        for (i in 0 until bits) {
             val bitPos = bitOffset + i
             val byteIndex = bitPos / 8
             val bitIndex = bitPos % 8
@@ -132,7 +263,20 @@ object Argon2Manager {
                 value = (value shl 1) or bit
             }
         }
-        return value and 0x7FF // 11位掩码
+        return value and ((1 shl bits) - 1)
+    }
+
+    private inline fun <T> List<T>.anyIndexed(predicate: (Int, T) -> Boolean): Boolean {
+        forEachIndexed { i, v -> if (predicate(i, v)) return true }
+        return false
+    }
+
+    /**
+     * SHA-512 哈希（作为 passphrase 派生的额外熵池）
+     */
+    private fun sha512(data: ByteArray): ByteArray {
+        val digest = MessageDigest.getInstance("SHA-512")
+        return digest.digest(data)
     }
 
     /**

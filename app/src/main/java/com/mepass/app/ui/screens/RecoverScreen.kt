@@ -1,8 +1,5 @@
 package com.mepass.app.ui.screens
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -11,7 +8,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,6 +19,9 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.mepass.app.model.RecoveryResult
 import com.mepass.app.model.Template
+import com.mepass.app.security.AnswerSecureTextField
+import com.mepass.app.security.PrivacyGuard
+import com.mepass.app.security.ScreenSensitiveState
 import com.mepass.app.template.TemplateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -32,11 +31,49 @@ import kotlinx.coroutines.withContext
 @Composable
 fun RecoverScreen(
     navController: NavController,
-    template: Template?
+    template: Template?,
+    registerClearHook: (String, () -> Unit) -> Unit = { _, _ -> },
+    unregisterClearHook: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val t = template
+
+    // 每个问题的答案
+    val answers = remember {
+        mutableStateMapOf<String, String>().apply {
+            t?.questions?.forEach { put(it.id, "") }
+        }
+    }
+    // 每个问题验证结果 null=未验证, true=正确, false=错误
+    val verifyResults = remember { mutableStateMapOf<String, Boolean?>() }
+    var isRecovering by remember { mutableStateOf(false) }
+    var recoveryResult: RecoveryResult? by remember { mutableStateOf(null) }
+    // 展示的passphrase明文（显示给用户的字符串引用）
+    var displayedPassphrase by remember { mutableStateOf<String?>(null) }
+
+    // 注册Screen级别的清理钩子
+    DisposableEffect(Unit) {
+        val hookKey = "RecoverScreen_main"
+        val callback: () -> Unit = {
+            // 清空所有答案、验证结果、恢复结果
+            answers.clear()
+            verifyResults.clear()
+            recoveryResult = null
+            displayedPassphrase = null
+            isRecovering = false
+            // 也清理临时passphrase
+            ScreenSensitiveState.clearTempPassphrase()
+        }
+        // 双路径注册：Activity clear hooks + PrivacyGuard global
+        registerClearHook(hookKey, callback)
+        PrivacyGuard.registerWipeCallback(callback)
+        onDispose {
+            PrivacyGuard.unregisterWipeCallback(callback)
+            unregisterClearHook(hookKey)
+            callback() // 离开屏幕也立刻清理
+        }
+    }
 
     if (t == null) {
         Scaffold(
@@ -63,17 +100,6 @@ fun RecoverScreen(
         return
     }
 
-    // 每个问题的答案
-    val answers = remember {
-        mutableStateMapOf<String, String>().apply {
-            t.questions.forEach { put(it.id, "") }
-        }
-    }
-    // 每个问题验证结果 null=未验证, true=正确, false=错误
-    val verifyResults = remember { mutableStateMapOf<String, Boolean?>() }
-    var isRecovering by remember { mutableStateOf(false) }
-    var recoveryResult: RecoveryResult? by remember { mutableStateOf(null) }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -92,6 +118,19 @@ fun RecoverScreen(
                                     TemplateManager.recoverPassphrase(t, answers.filterValues { it.isNotBlank() })
                                 }
                                 isRecovering = false
+                                // 安全地临时保存passphrase（不直接存到字符串常量池）
+                                when (val r = recoveryResult) {
+                                    is RecoveryResult.Success -> {
+                                        displayedPassphrase = r.passphrase
+                                        val ca = CharArray(r.passphrase.length)
+                                        r.passphrase.forEachIndexed { idx, c -> ca[idx] = c }
+                                        ScreenSensitiveState.temporaryPassphrase = ca
+                                    }
+                                    else -> {
+                                        displayedPassphrase = null
+                                        ScreenSensitiveState.clearTempPassphrase()
+                                    }
+                                }
                             }
                         },
                         enabled = !isRecovering
@@ -133,9 +172,7 @@ fun RecoverScreen(
                     val correct = verifyResults.values.count { it == true }
                     val threshold = t.thresholdConfig.threshold
                     val total = t.thresholdConfig.totalQuestions
-                    Text(
-                        "门限要求：至少正确 $threshold / $total 个问题"
-                    )
+                    Text("门限要求：至少正确 $threshold / $total 个问题")
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "当前已知正确：$correct 个",
@@ -168,10 +205,7 @@ fun RecoverScreen(
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "${index + 1}. ",
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text(text = "${index + 1}. ", fontWeight = FontWeight.Bold)
                             Text(
                                 text = q.text,
                                 modifier = Modifier.weight(1f),
@@ -200,10 +234,10 @@ fun RecoverScreen(
                             Spacer(Modifier.height(4.dp))
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
+                            AnswerSecureTextField(
                                 value = answers[q.id] ?: "",
                                 onValueChange = { answers[q.id] = it },
-                                label = { Text("答案") },
+                                label = { Text("答案（禁止复制粘贴）") },
                                 modifier = Modifier.weight(1f)
                             )
                             Spacer(Modifier.width(8.dp))
@@ -226,9 +260,7 @@ fun RecoverScreen(
                                         ).show()
                                     }
                                 }
-                            ) {
-                                Text("验证")
-                            }
+                            ) { Text("验证") }
                         }
                     }
                 }
@@ -267,34 +299,48 @@ fun RecoverScreen(
                                 )
                                 Spacer(Modifier.height(12.dp))
                                 Text(
-                                    "您的 Passphrase：",
+                                    "您的 Passphrase（请手动抄写，禁止复制）：",
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Card(
                                     colors = CardDefaults.cardColors(
                                         containerColor = MaterialTheme.colorScheme.surface
+                                    ),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        2.dp, MaterialTheme.colorScheme.primary
                                     )
                                 ) {
-                                    Text(
-                                        text = r.passphrase,
-                                        modifier = Modifier.padding(12.dp),
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                Button(
-                                    onClick = {
-                                        val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clip.setPrimaryClip(ClipData.newPlainText("MePass Passphrase", r.passphrase))
-                                        Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show()
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = null)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("复制 Passphrase")
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        // 分段显示，降低误选复制的概率（每个词单独卡片）
+                                        val words = r.passphrase.split("-")
+                                        androidx.compose.foundation.layout.FlowRow(
+                                            maxItemsInEachRow = 4,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            words.forEachIndexed { i, w ->
+                                                AssistChip(
+                                                    onClick = {},
+                                                    label = {
+                                                        Text(
+                                                            "${i + 1}.$w",
+                                                            fontWeight = FontWeight.Bold,
+                                                            userSelectable = false
+                                                        )
+                                                    },
+                                                    enabled = false
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.height(16.dp))
+                                        Text(
+                                            "⚠️ 请立即用笔和纸抄写下以上 12 个单词，顺序不能错，退出本页面后内容将被清空！",
+                                            color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
                         }

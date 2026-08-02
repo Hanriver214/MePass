@@ -1,22 +1,43 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- =============================================================
+         MePass 安全加固 Manifest 配置
+         目标：禁止其他应用干扰 / 最小化权限暴露 / 防数据泄露
+         ============================================================= -->
+
+    <!-- 不声明任何多余权限：MePass 完全离线，不需要网络/存储/电话等权限 -->
+
     <application
         android:allowBackup="false"
+        android:allowTaskReparenting="false"
+        android:debuggable="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MePass">
+        android:theme="@style/Theme.MePass"
+        android:exported="false"
+        android:usesCleartextTraffic="false">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="false"
+            android:finishOnTaskLaunch="false"
+            android:noHistory="false"
+            android:screenOrientation="unspecified"
             android:theme="@style/Theme.MePass">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
     </application>
+
+    <!-- 只允许安装在正常非 debug 的设备环境（可选），此处保留用户自由度，不做强限制 -->
+    <!-- 安装时自动校验签名一致性由 Android 系统保证 -->
 
 </manifest>
