@@ -29,7 +29,9 @@ import kotlinx.coroutines.withContext
 @Composable
 fun CreateTemplateScreen(
     navController: NavController,
-    onTemplateCreated: (com.mepass.app.model.Template) -> Unit
+    onTemplateCreated: (com.mepass.app.model.Template) -> Unit,
+    registerClearHook: (String, () -> Unit) -> Unit = { _, _ -> },
+    unregisterClearHook: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()

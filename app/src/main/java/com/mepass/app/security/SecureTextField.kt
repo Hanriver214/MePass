@@ -1,31 +1,52 @@
 package com.mepass.app.security
 
+import android.app.Activity
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
+import android.view.Window
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.platform.LocalTextToolbar
+import androidx.compose.ui.platform.TextToolbar
+import androidx.compose.ui.platform.TextToolbarStatus
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
-import android.view.ActionMode
-import android.view.Menu
-import android.view.MenuItem
-import androidx.compose.ui.text.input.TextFieldValue.Companion.Saver
+
+/**
+ * 一个完全禁用文本操作（复制/剪切/粘贴/分享/全选）的空 TextToolbar
+ * Compose 文本字段如果没提供 toolbar，则不会弹文本选择/操作浮窗，
+ * 这是 Compose 层最干净的拦截方式。
+ */
+private object NoCopyPasteTextToolbar : TextToolbar {
+    override val status: TextToolbarStatus = TextToolbarStatus.Hidden
+    override fun hide() {}
+    override fun showMenu(
+        rect: androidx.compose.ui.geometry.Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        // 全部拒绝，永远不弹
+    }
+}
 
 /**
  * 禁止复制 / 剪切 / 粘贴 / 选择全部 / 长按文本选择菜单 的安全文本输入框
  *
- * 实现方式：
- * 1. 通过 compositionLocal 禁用 TextToolbar（Compose文本工具栏）
- * 2. 拦截 ActionMode.Callback2 防止原生复制粘贴菜单弹出
- * 3. 使用自定义的 Value 变化回调检测粘贴并拒绝包含非键盘输入来源的内容
+ * 两层防御：
+ *  1. Compose 层：用 CompositionLocal 提供空的 TextToolbar，永远不弹复制粘贴浮窗
+ *  2. Framework 层：包装当前 Activity Window.Callback，拦截 onActionModeStarted 立即 finish
+ *     （系统原生的 ActionMode 被触发时也会被秒关闭）
  */
 @Composable
 fun SecureOutlinedTextField(
@@ -39,60 +60,66 @@ fun SecureOutlinedTextField(
     keyboardType: KeyboardType = KeyboardType.Text,
     imeAction: ImeAction = ImeAction.Default,
     visualTransformation: VisualTransformation = VisualTransformation.None,
-    colors: TextFieldColors = OutlinedTextFieldDefaults.colors()
+    colors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
+    textStyle: TextStyle = TextStyle.Default
 ) {
     val context = LocalContext.current
 
-    // 持续拒绝ACTION_MODE（复制粘贴菜单）
+    // Layer 2: 拦截 Window.Callback，禁止原生 ActionMode
     DisposableEffect(Unit) {
-        val activity = context as? android.app.Activity
-        var originalCallback: ActionMode.Callback? = null
-        val noopCallback = object : ActionMode.Callback2() {
-            override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean {
-                // 清空所有菜单项 - 绝不允许复制/粘贴/剪切/分享/全选
-                menu?.clear()
-                return false
-            }
-            override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
-                menu?.clear()
-                return false
-            }
-            override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
-            override fun onDestroyActionMode(mode: ActionMode?) {}
-        }
-        activity?.window?.callback = object : android.view.Window.CallbackWrapper(activity.window.callback) {
-            override fun onActionModeStarted(mode: ActionMode?) {
-                mode?.menu?.clear()
-                mode?.finish()
-                super.onActionModeStarted(mode)
-            }
-            override fun onCreatePanelMenu(featureId: Int, menu: Menu): Boolean {
-                // 不允许任何文本操作菜单出现
-                return false
+        val activity = context as? Activity
+        val original: Window.Callback? = activity?.window?.callback
+        if (activity != null && original != null) {
+            activity.window.callback = object : Window.Callback by original {
+                override fun onActionModeStarted(mode: ActionMode?) {
+                    // 清空菜单项并立刻结束 -> 复制/粘贴/剪切/分享/全选都没了
+                    runCatching { mode?.menu?.clear() }
+                    runCatching { mode?.finish() }
+                }
+
+                override fun onCreatePanelMenu(featureId: Int, menu: Menu): Boolean {
+                    // 不允许任何文本操作面板出现（例如长按弹出的上下文菜单）
+                    return false
+                }
+
+                override fun onMenuItemSelected(featureId: Int, item: MenuItem): Boolean {
+                    // 屏蔽 android.R.id.selectAll/copy/cut/paste/share 等
+                    val id = item.itemId
+                    if (id == android.R.id.copy || id == android.R.id.cut ||
+                        id == android.R.id.paste || id == android.R.id.shareText ||
+                        id == android.R.id.selectAll
+                    ) return true
+                    return original.onMenuItemSelected(featureId, item)
+                }
             }
         }
         onDispose {
-            // 不还原，保持安全策略
+            if (activity != null && original != null) {
+                // 退出屏幕时恢复原 callback，避免影响其他页面
+                runCatching { activity.window.callback = original }
+            }
         }
     }
 
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = label,
-        modifier = modifier,
-        isError = isError,
-        singleLine = singleLine,
-        maxLines = maxLines,
-        colors = colors,
-        visualTransformation = visualTransformation,
-        keyboardOptions = KeyboardOptions(
-            keyboardType = keyboardType,
-            imeAction = imeAction
-        ),
-        // 关键：通过Modifier.onFocusChanged 清除用户可能在未聚焦期间复制到剪切板的内容
-        readOnly = false
-    )
+    // Layer 1: 空 TextToolbar（Compose 层，优先生效）
+    CompositionLocalProvider(LocalTextToolbar provides NoCopyPasteTextToolbar) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = label,
+            modifier = modifier,
+            isError = isError,
+            singleLine = singleLine,
+            maxLines = maxLines,
+            colors = colors,
+            visualTransformation = visualTransformation,
+            textStyle = textStyle,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = keyboardType,
+                imeAction = imeAction
+            )
+        )
+    }
 }
 
 /**

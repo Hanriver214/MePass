@@ -84,12 +84,9 @@ object PrivacyGuard {
             WindowManager.LayoutParams.FLAG_SECURE
         )
 
-        // 在 Android 12+ 上额外隐藏内容在最近任务中（即使FLAG_SECURE已覆盖）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                activity.setRecentsScreenshotAllowed(false)
-            } catch (_: Throwable) {}
-        }
+        // 注：setRecentsScreenshotAllowed 是 Android 13+ ActivityOptions API（非 Activity 方法）。
+        // 通用防最近任务泄露方案：FLAG_SECURE 已经在系统层面覆盖"禁止录屏/截图 + 最近任务缩略图空白"，
+        // 所以此处不需要额外调用。
 
         // 强制竖屏（减少配置变更导致的内存dump窗口）
         try {

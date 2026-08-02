@@ -312,30 +312,33 @@ fun RecoverScreen(
                                     )
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp)) {
-                                        // 分段显示，降低误选复制的概率（每个词单独卡片）
-                                        val words = r.passphrase.split("-")
-                                        androidx.compose.foundation.layout.FlowRow(
-                                            maxItemsInEachRow = 4,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            words.forEachIndexed { i, w ->
-                                                AssistChip(
-                                                    onClick = {},
-                                                    label = {
-                                                        Text(
-                                                            "${i + 1}.$w",
-                                                            fontWeight = FontWeight.Bold,
-                                                            userSelectable = false
+                                        // 每 4 个字符换一行显示，便于手动抄写；全程不提供复制按钮
+                                        val pass = r.passphrase
+                                        val chunkSize = 4
+                                        val chunked = pass.chunked(chunkSize)
+                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            chunked.forEachIndexed { rowIdx, chunk ->
+                                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    chunk.forEachIndexed { i, ch ->
+                                                        val absoluteIdx = rowIdx * chunkSize + i + 1
+                                                        AssistChip(
+                                                            onClick = {},
+                                                            label = {
+                                                                Text(
+                                                                    "$absoluteIdx. $ch",
+                                                                    fontWeight = FontWeight.Bold
+                                                                )
+                                                            },
+                                                            enabled = false
                                                         )
-                                                    },
-                                                    enabled = false
-                                                )
+                                                    }
+                                                }
                                             }
                                         }
                                         Spacer(Modifier.height(16.dp))
                                         Text(
-                                            "⚠️ 请立即用笔和纸抄写下以上 12 个单词，顺序不能错，退出本页面后内容将被清空！",
+                                            "⚠️ 请立即用笔和纸抄写下以上 ${pass.length} 位 Passphrase（顺序不能错，字符要完全一致），" +
+                                                    "退出本页面后内容将被清空！本应用禁止复制粘贴，只能手写。",
                                             color = MaterialTheme.colorScheme.error,
                                             style = MaterialTheme.typography.bodySmall,
                                             fontWeight = FontWeight.Bold

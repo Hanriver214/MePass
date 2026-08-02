@@ -77,20 +77,25 @@ object Argon2Manager {
     /**
      * 从规范化答案派生固定长度的密钥（字节数组）
      * 用于加密 Shamir 分片
+     *
+     * 注：mkammerer argon2-jvm 的 Argon2.hash 重载只接受 (t, m, p, char[], Charset)
+     * 或 (t, m, p, String, Charset)，不接受自定义 salt 字节数组；
+     * 所以我们将 salt 拼接到明文前面（格式 "salt_b64|answer"），然后对整体做
+     * Argon2id，再取 base64 尾部 hash 段解码 + SHA-256 裁剪到 32 字节作为密钥。
+     * 这样不依赖于内部 salt，同时仍可复现（同答案+同salt 必生成同密钥）。
      */
     fun deriveKeyFromAnswer(normalizedAnswer: String, salt: ByteArray): ByteArray {
-        val chars = normalizedAnswer.toCharArray()
+        val saltB64 = android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP)
+        val combined = "$saltB64|$normalizedAnswer"
+        val chars = combined.toCharArray()
         try {
-            // 自定义盐的原始哈希输出
-            val result = argon2.hash(
+            val encoded = argon2.hash(
                 ARGON2_ITERATIONS,
                 ARGON2_MEMORY_KB,
                 ARGON2_PARALLELISM,
-                chars,
-                salt
+                chars
             )
-            // 从 Argon2 输出中提取原始哈希（编码后字符串末尾）
-            return extractRawHashFromEncoded(result, ARGON2_HASH_LENGTH)
+            return extractRawHashFromEncoded(encoded, ARGON2_HASH_LENGTH)
         } finally {
             chars.fill('\u0000')
         }
@@ -103,15 +108,20 @@ object Argon2Manager {
     private fun extractRawHashFromEncoded(encoded: String, expectedLength: Int): ByteArray {
         val parts = encoded.split('$')
         // parts[0]="" , parts[1]="argon2id", parts[2]="v=19", parts[3]="m=..,t=..,p=..", parts[4]=salt, parts[5]=hash
-        require(parts.size >= 6) { "无效的 Argon2 编码格式" }
-        val hashBase64 = parts[5]
-        val decoded = android.util.Base64.decode(hashBase64, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING)
-        return if (decoded.size >= expectedLength) {
-            decoded.copyOf(expectedLength)
-        } else {
-            // 如果解码后的长度不对，退回到对整个编码做SHA-256
-            sha256(encoded.toByteArray()).copyOf(expectedLength)
+        if (parts.size >= 6) {
+            val hashBase64 = parts[5]
+            runCatching {
+                val decoded = android.util.Base64.decode(
+                    hashBase64,
+                    android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING
+                )
+                if (decoded.size >= expectedLength) {
+                    return decoded.copyOf(expectedLength)
+                }
+            }
         }
+        // 解码失败或长度不足：退回到对整个编码做 SHA-256
+        return sha256(encoded.toByteArray()).copyOf(expectedLength)
     }
 
     /**

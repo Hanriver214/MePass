@@ -25,7 +25,7 @@ data class Question(
 @Serializable
 data class QuestionAnswer(
     val question: Question,
-    /** 规范化后的答案哈希（Argon2id）
+    /** 规范化后的答案哈希（Argon2id） */
     val answerHash: String,
     /** 规范化后的答案明文（仅在生成时临时保存，导出时清除） */
     val plainAnswer: String? = null

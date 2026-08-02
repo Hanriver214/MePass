@@ -25,7 +25,9 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ImportTemplateScreen(
     navController: NavController,
-    onTemplateImported: (Template) -> Unit
+    onTemplateImported: (Template) -> Unit,
+    registerClearHook: (String, () -> Unit) -> Unit = { _, _ -> },
+    unregisterClearHook: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
