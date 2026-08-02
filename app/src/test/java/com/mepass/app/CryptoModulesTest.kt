@@ -5,6 +5,7 @@ import com.mepass.app.crypto.Argon2Manager
 import com.mepass.app.crypto.ShamirSecretSharing
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -70,7 +71,7 @@ class CryptoModulesTest {
 
     @Test
     fun `shamir k=1 n=5 all shares equal secret`() {
-        val secret = byteArrayOf(0xAA, 0xBB.toByte(), 0xCC.toByte())
+        val secret = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
         val shares = ShamirSecretSharing.split(secret, n = 5, k = 1)
         for (share in shares) {
             val recovered = ShamirSecretSharing.combine(listOf(share), 1)
