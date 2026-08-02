@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MePass</string>
+    <string name="app_description">基于隐私问题门限恢复的离线密码管理器</string>
+</resources>
