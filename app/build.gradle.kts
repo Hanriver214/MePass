@@ -13,13 +13,13 @@ android {
         minSdk = 24
         // targetSdk 34：Android 14 当前主流，不要贸然升到 35
         targetSdk = 34
-        // 修复 v1.0.4 依然闪退：APK 未经过 zipalign（零 extra field），
-        //   所有 STORED 文件未 4KB 对齐。定制 ROM 安装器依赖 zipalign 的
-        //   extra field 来正确解析文件偏移，未对齐会导致解析闪退。
-        // 在 buildTypes.release 中显式声明 isZipalignEnabled = true，
-        // 并升级 versionCode=6 / 1.0.5。
-        versionCode = 6
-        versionName = "1.0.5"
+        // 修复 v1.0.5 zipalign 未执行（CI 找不到 zipalign/apksigner 工具）：
+        //   v1.0.5 构建日志显示 "zipalign: NOT FOUND / apksigner: NOT FOUND"，
+        //   原因是 apt 包名错误，build-tools 工具不在 android-sdk-platform-tools 中。
+        //   改为从 GitHub Actions 预装的 SDK ($ANDROID_HOME/build-tools/*/) 定位工具。
+        //   升级 versionCode=7 / 1.0.6。
+        versionCode = 7
+        versionName = "1.0.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

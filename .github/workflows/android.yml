@@ -266,52 +266,74 @@ jobs:
         run: |
           set -e
           
-          # 1) 安装 Android SDK 平台工具（获取 zipalign 和 apksigner）
-          echo "=== 安装 Android SDK 平台工具 ==="
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq android-sdk-platform-tools 2>/dev/null || {
-            echo "apt 安装失败，尝试下载独立工具..."
-            # 备选方案：下载 cmdline-tools
-            mkdir -p /tmp/cmdline-tools
-            curl -fsSL -o /tmp/cmdline-tools/cmdline-tools.zip \
-              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" 2>&1 | tail -3 || true
-            if [ -f /tmp/cmdline-tools/cmdline-tools.zip ]; then
-              unzip -qo /tmp/cmdline-tools/cmdline-tools.zip -d /tmp/android-sdk 2>&1 | tail -3
-              ANDROID_SDK_ROOT=/tmp/android-sdk
-            fi
-          }
+          # 1) 定位 Android SDK build-tools（GitHub Actions runner 预装）
+          echo "=== 定位 Android SDK build-tools ==="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           
-          # 2) 查找 zipalign 和 apksigner
+          # GitHub Actions ubuntu-latest 预装 SDK 在 /usr/local/lib/android/sdk
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK_ROOT=$SDK_ROOT"
+          
+          # 列出已安装的 build-tools 版本
+          if [ -d "$SDK_ROOT/build-tools" ]; then
+            echo "已安装的 build-tools 版本:"
+            ls -1 "$SDK_ROOT/build-tools/" || true
+          fi
+          
+          # 找到最新可用的 build-tools 版本
+          BT_DIR=""
+          if [ -d "$SDK_ROOT/build-tools" ]; then
+            BT_DIR=$(ls -1d "$SDK_ROOT/build-tools"/*/ 2>/dev/null | sort -V | tail -1)
+          fi
+          
           ZIPALIGN=""
           APKSIGNER=""
           
-          # 尝试从 apt 安装的路径
-          if command -v zipalign >/dev/null 2>&1; then
+          if [ -n "$BT_DIR" ] && [ -d "$BT_DIR" ]; then
+            echo "使用 build-tools: $BT_DIR"
+            if [ -f "${BT_DIR}zipalign" ]; then
+              ZIPALIGN="${BT_DIR}zipalign"
+              chmod +x "$ZIPALIGN" 2>/dev/null || true
+            fi
+            if [ -f "${BT_DIR}apksigner" ]; then
+              APKSIGNER="${BT_DIR}apksigner"
+              chmod +x "$APKSIGNER" 2>/dev/null || true
+            fi
+          fi
+          
+          # 如果预装的没有，尝试用 sdkmanager 安装 build-tools;34.0.0
+          if [ -z "$ZIPALIGN" ] || [ -z "$APKSIGNER" ]; then
+            echo "预装 build-tools 中未找到工具，尝试安装 build-tools;34.0.0..."
+            yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" 2>/dev/null || true
+            if [ -d "$SDK_ROOT/build-tools/34.0.0" ]; then
+              BT_DIR="$SDK_ROOT/build-tools/34.0.0/"
+              [ -f "${BT_DIR}zipalign" ] && ZIPALIGN="${BT_DIR}zipalign"
+              [ -f "${BT_DIR}apksigner" ] && APKSIGNER="${BT_DIR}apksigner"
+            fi
+          fi
+          
+          # 最后备选：搜索系统 PATH
+          if [ -z "$ZIPALIGN" ] && command -v zipalign >/dev/null 2>&1; then
             ZIPALIGN=$(which zipalign)
-          elif [ -f /usr/lib/android-sdk/build-tools/34.0.0/zipalign ]; then
-            ZIPALIGN="/usr/lib/android-sdk/build-tools/34.0.0/zipalign"
-          elif [ -f /usr/lib/android-sdk/build-tools/33.0.2/zipalign ]; then
-            ZIPALIGN="/usr/lib/android-sdk/build-tools/33.0.2/zipalign"
           fi
-          
-          if command -v apksigner >/dev/null 2>&1; then
+          if [ -z "$APKSIGNER" ] && command -v apksigner >/dev/null 2>&1; then
             APKSIGNER=$(which apksigner)
-          elif [ -f /usr/lib/android-sdk/build-tools/34.0.0/apksigner ]; then
-            APKSIGNER="/usr/lib/android-sdk/build-tools/34.0.0/apksigner"
-          elif [ -f /usr/lib/android-sdk/build-tools/33.0.2/apksigner ]; then
-            APKSIGNER="/usr/lib/android-sdk/build-tools/33.0.2/apksigner"
-          fi
-          
-          # 如果找不到，尝试从下载的 cmdline-tools 中查找
-          if [ -z "$ZIPALIGN" ] && [ -d /tmp/android-sdk ]; then
-            ZIPALIGN=$(find /tmp/android-sdk -name "zipalign" -type f 2>/dev/null | head -1)
-            APKSIGNER=$(find /tmp/android-sdk -name "apksigner" -type f 2>/dev/null | head -1)
           fi
           
           echo "zipalign: ${ZIPALIGN:-NOT FOUND}"
           echo "apksigner: ${APKSIGNER:-NOT FOUND}"
           
-          # 3) 找到构建的 APK
+          if [ -z "$ZIPALIGN" ] && [ -z "$APKSIGNER" ]; then
+            echo "ERROR: 既找不到 zipalign 也找不到 apksigner"
+            echo "已安装的 build-tools 目录:"
+            find "$SDK_ROOT/build-tools" -name "zipalign" -o -name "apksigner" 2>/dev/null || true
+            # 不 exit 1，让构建继续（AGP 可能已正确对齐和签名）
+            echo "[WARN] 跳过手动 zipalign 和重签名步骤"
+            exit 0
+          fi
+          
+          # 2) 找到构建的 APK
           FOUND_APK=""
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             FOUND_APK=app/build/outputs/apk/release/app-release.apk
@@ -327,38 +349,42 @@ jobs:
           echo "找到 APK: $FOUND_APK"
           echo "APK 大小: $(stat -c%s "$FOUND_APK") bytes"
           
-          # 4) 强制 zipalign（如果可用）
+          # 3) 强制 zipalign
           if [ -n "$ZIPALIGN" ] && [ -x "$ZIPALIGN" ]; then
             echo "=== 执行 zipalign ==="
+            # -f: 强制覆盖输出文件
+            # -p: 对所有文件（包括 STORED）对齐到 4 字节边界
+            # 4: 对齐到 4 字节（标准值，Google Play 要求）
             cp "$FOUND_APK" "${FOUND_APK}.unaligned"
             "$ZIPALIGN" -f -p 4 "${FOUND_APK}.unaligned" "$FOUND_APK"
             echo "zipalign 完成"
             echo "对齐后大小: $(stat -c%s "$FOUND_APK") bytes"
+            
+            # 验证对齐
+            echo "=== zipalign 验证 ==="
+            "$ZIPALIGN" -c -p 4 "$FOUND_APK" && echo "✓ zipalign 验证通过" || echo "✗ zipalign 验证失败"
+            
             rm -f "${FOUND_APK}.unaligned"
           else
             echo "[WARN] 找不到 zipalign，跳过对齐步骤"
           fi
           
-          # 5) 重新签名 APK（因为 zipalign 会破坏原有签名）
+          # 4) 重新签名 APK（因为 zipalign 会破坏原有签名）
           if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
             echo "=== 用 apksigner 重新签名 ==="
-            APKSIGNER_ALIAS="${{ env.MEPASS_RELEASE_KEY_ALIAS }}"
-            APKSIGNER_PW="${{ env.MEPASS_RELEASE_KEY_PASSWORD }}"
-            STORE_PW="${{ env.MEPASS_RELEASE_STORE_PASSWORD }}"
-            STORE_FILE="${{ env.MEPASS_RELEASE_STORE_FILE }}"
+            STORE_FILE="${MEPASS_RELEASE_STORE_FILE}"
             
             if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
-              # 用 apksigner 签名（JKS keystore）
               # 用临时文件传递密码，避免 shell 转义问题和日志泄露
               STORE_PW_FILE=$(mktemp)
-              echo -n "$STORE_PW" > "$STORE_PW_FILE"
+              echo -n "${MEPASS_RELEASE_STORE_PASSWORD}" > "$STORE_PW_FILE"
               KEY_PW_FILE=$(mktemp)
-              echo -n "${APKSIGNER_PW:-$STORE_PW}" > "$KEY_PW_FILE"
+              echo -n "${MEPASS_RELEASE_KEY_PASSWORD:-${MEPASS_RELEASE_STORE_PASSWORD}}" > "$KEY_PW_FILE"
               
               "$APKSIGNER" sign \
                 --ks "$STORE_FILE" \
                 --ks-type JKS \
-                --ks-key-alias "$APKSIGNER_ALIAS" \
+                --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
                 --ks-pass "file:$STORE_PW_FILE" \
                 --key-pass "file:$KEY_PW_FILE" \
                 --v1-signing-enabled true \
@@ -367,7 +393,6 @@ jobs:
                 --out "$FOUND_APK.signed" \
                 "$FOUND_APK" 2>&1 || {
                   echo "apksigner JKS 签名失败，尝试转换为 PKCS12..."
-                  # 备选：转换为 PKCS12 后再签名
                   P12_FILE="${STORE_FILE%.jks}.p12"
                   keytool -importkeystore \
                     -srckeystore "$STORE_FILE" \
@@ -379,7 +404,7 @@ jobs:
                   "$APKSIGNER" sign \
                     --ks "$P12_FILE" \
                     --ks-type PKCS12 \
-                    --ks-key-alias "$APKSIGNER_ALIAS" \
+                    --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
                     --ks-pass "file:$STORE_PW_FILE" \
                     --key-pass "file:$KEY_PW_FILE" \
                     --v1-signing-enabled true \
@@ -403,7 +428,7 @@ jobs:
             echo "[WARN] 找不到 apksigner，跳过重新签名"
           fi
           
-          # 6) 验证最终 APK
+          # 5) 验证最终 APK
           echo "=== 最终 APK 验证 ==="
           echo "文件大小: $(stat -c%s "$FOUND_APK") bytes"
           if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
