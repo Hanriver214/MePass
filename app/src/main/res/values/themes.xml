@@ -1,22 +1,8 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!--
-        Compose Material3 启动不闪退的通用 base theme：Theme.AppCompat.Light.NoActionBar
-        (AppCompat 是 AOSP / Material 组件体系的稳定交集，minSdk 24+ 所有 ROM 都有稳定实现)。
-        - 不选 Theme.MaterialComponents.*：避免项目未显式引入
-          com.google.android.material:material AAR 时 AAPT 报
-          "style/Theme.MaterialComponents.* not found" 资源链接失败
-        - 不选 android:Theme.Material.Light.NoActionBar：部分定制 ROM 上
-          Compose Material3 attachBaseContext 首帧找不到 colorPrimaryVariant 等属性
-          而直接 Resources$NotFoundException → 启动即闪退
-        Theme.AppCompat.* 依赖 androidx.appcompat (项目 compose BOM 已传递依赖)，
-        始终可用且与 setContent { MaterialTheme { ... } } 完美叠加。
-    -->
-    <style name="Theme.MePass" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <!-- 关闭默认 ActionBar，由 Compose Scaffold TopAppBar 自己管 -->
-        <item name="windowNoTitle">true</item>
-        <item name="windowActionBar">false</item>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Compose Material3 应用主题：以 Material3 标准主题为基底，避免引入 AppCompat 历史包袱 -->
+    <style name="Theme.MePass" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/purple_700</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">@color/white</item>
     </style>
 </resources>

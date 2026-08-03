@@ -1,27 +1,27 @@
 package com.mepass.app.ui.screens
 
-import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavController
 import com.mepass.app.model.RecoveryResult
 import com.mepass.app.model.Template
-import com.mepass.app.security.AnswerSecureTextField
 import com.mepass.app.security.PrivacyGuard
-import com.mepass.app.security.ScreenSensitiveState
 import com.mepass.app.template.TemplateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -30,359 +30,283 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecoverScreen(
-    navController: NavController,
-    template: Template?,
-    registerClearHook: (String, () -> Unit) -> Unit = { _, _ -> },
-    unregisterClearHook: (String) -> Unit = {}
+    template: Template,
+    onBack: () -> Unit
 ) {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    val t = template
+    val scope = rememberCoroutineScope()
+    val keyboard = LocalSoftwareKeyboardController.current
 
-    // 每个问题的答案
-    val answers = remember {
-        mutableStateMapOf<String, String>().apply {
-            t?.questions?.forEach { put(it.id, "") }
-        }
-    }
-    // 每个问题验证结果 null=未验证, true=正确, false=错误
-    val verifyResults = remember { mutableStateMapOf<String, Boolean?>() }
+    var answers by remember { mutableStateOf(mapOf<String, String>()) }
+    var verifyResults by remember { mutableStateOf(mapOf<String, Boolean>()) }
+    var recoveryResult by remember { mutableStateOf<RecoveryResult?>(null) }
     var isRecovering by remember { mutableStateOf(false) }
-    var recoveryResult: RecoveryResult? by remember { mutableStateOf(null) }
-    // 展示的passphrase明文（显示给用户的字符串引用）
-    var displayedPassphrase by remember { mutableStateOf<String?>(null) }
+    var showPassphrase by remember { mutableStateOf(false) }
 
-    // 注册Screen级别的清理钩子
+    // 注册 wipe 回调（退出屏幕时清空密码）
     DisposableEffect(Unit) {
-        val hookKey = "RecoverScreen_main"
-        val callback: () -> Unit = {
-            // 清空所有答案、验证结果、恢复结果
-            answers.clear()
-            verifyResults.clear()
-            recoveryResult = null
-            displayedPassphrase = null
-            isRecovering = false
-            // 也清理临时passphrase
-            ScreenSensitiveState.clearTempPassphrase()
-        }
-        // 双路径注册：Activity clear hooks + PrivacyGuard global
-        registerClearHook(hookKey, callback)
+        val callback = { recoveryResult = null }
         PrivacyGuard.registerWipeCallback(callback)
         onDispose {
             PrivacyGuard.unregisterWipeCallback(callback)
-            unregisterClearHook(hookKey)
-            callback() // 离开屏幕也立刻清理
         }
-    }
-
-    if (t == null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("恢复 Passphrase", fontWeight = FontWeight.Bold) },
-                    navigationIcon = {
-                        IconButton(onClick = { navController.popBackStack() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("请先在首页导入或创建模板")
-            }
-        }
-        return
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("恢复 Passphrase", fontWeight = FontWeight.Bold) },
+                title = { Text("恢复密码") },
                 navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
+                    IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
                 actions = {
                     TextButton(
                         onClick = {
-                            coroutineScope.launch {
+                            keyboard?.hide()
+                            scope.launch {
                                 isRecovering = true
-                                recoveryResult = withContext(Dispatchers.Default) {
-                                    TemplateManager.recoverPassphrase(t, answers.filterValues { it.isNotBlank() })
-                                }
-                                isRecovering = false
-                                // 安全地临时保存passphrase（不直接存到字符串常量池）
-                                when (val r = recoveryResult) {
-                                    is RecoveryResult.Success -> {
-                                        displayedPassphrase = r.passphrase
-                                        val ca = CharArray(r.passphrase.length)
-                                        r.passphrase.forEachIndexed { idx, c -> ca[idx] = c }
-                                        ScreenSensitiveState.temporaryPassphrase = ca
+                                try {
+                                    val result = withContext(Dispatchers.Default) {
+                                        TemplateManager.recoverPassphrase(template, answers)
                                     }
-                                    else -> {
-                                        displayedPassphrase = null
-                                        ScreenSensitiveState.clearTempPassphrase()
-                                    }
+                                    recoveryResult = result
+                                    showPassphrase = result is RecoveryResult.Success
+                                } finally {
+                                    isRecovering = false
                                 }
                             }
                         },
-                        enabled = !isRecovering
+                        enabled = !isRecovering && answers.isNotEmpty()
                     ) {
-                        if (isRecovering) {
-                            CircularProgressIndicator(Modifier.size(20.dp))
-                        } else {
-                            Icon(Icons.Default.VpnKey, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text("开始恢复")
-                        }
+                        Text("开始恢复")
                     }
                 }
             )
         }
     ) { padding ->
-        Column(
+        LazyColumn(
             modifier = Modifier
-                .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 状态卡片
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = t.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+            // 模板信息卡片
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     )
-                    Spacer(Modifier.height(4.dp))
-                    val correct = verifyResults.values.count { it == true }
-                    val threshold = t.thresholdConfig.threshold
-                    val total = t.thresholdConfig.totalQuestions
-                    Text("门限要求：至少正确 $threshold / $total 个问题")
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "当前已知正确：$correct 个",
-                        fontWeight = FontWeight.Bold,
-                        color = if (correct >= threshold)
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.onSurface
-                    )
-                    if (correct >= threshold) {
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Text(
-                            "✓ 已达到恢复门限，点击「开始恢复」生成 Passphrase",
-                            color = MaterialTheme.colorScheme.primary
+                            template.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "门限: ${template.thresholdConfig.threshold}/${template.thresholdConfig.totalQuestions}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            "需要至少 ${template.thresholdConfig.threshold} 个正确答案",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
             }
 
-            // 问题输入
-            t.questions.forEachIndexed { index, q ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = when (verifyResults[q.id]) {
-                            true -> androidx.compose.ui.graphics.Color(0x334CAF50)
-                            false -> androidx.compose.ui.graphics.Color(0x33F44336)
-                            else -> MaterialTheme.colorScheme.surfaceVariant
-                        }
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = "${index + 1}. ", fontWeight = FontWeight.Bold)
-                            Text(
-                                text = q.text,
-                                modifier = Modifier.weight(1f),
-                                fontWeight = FontWeight.Medium
-                            )
-                            when (verifyResults[q.id]) {
-                                true -> Icon(
-                                    Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = androidx.compose.ui.graphics.Color(0xFF4CAF50)
-                                )
-                                false -> Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = null,
-                                    tint = androidx.compose.ui.graphics.Color(0xFFF44336)
-                                )
-                                null -> {}
+            // 问题列表
+            items(template.questions) { question ->
+                AnswerInputCard(
+                    question = question,
+                    answer = answers[question.id] ?: "",
+                    verifyResult = verifyResults[question.id],
+                    onAnswerChange = { newAnswer ->
+                        answers = answers + (question.id to newAnswer)
+                        verifyResults = verifyResults - question.id
+                    },
+                    onVerify = {
+                        val answerText = answers[question.id] ?: ""
+                        if (answerText.isNotBlank()) {
+                            scope.launch {
+                                val result = withContext(Dispatchers.Default) {
+                                    TemplateManager.verifySingleAnswer(template, question.id, answerText)
+                                }
+                                verifyResults = verifyResults + (question.id to result)
                             }
                         }
-                        if (q.hint != null) {
-                            Text(
-                                text = "提示：${q.hint}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(4.dp))
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AnswerSecureTextField(
-                                value = answers[q.id] ?: "",
-                                onValueChange = { answers[q.id] = it },
-                                label = { Text("答案（禁止复制粘贴）") },
-                                modifier = Modifier.weight(1f)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            OutlinedButton(
-                                onClick = {
-                                    val raw = answers[q.id] ?: ""
-                                    if (raw.isBlank()) {
-                                        verifyResults[q.id] = null
-                                        return@OutlinedButton
-                                    }
-                                    coroutineScope.launch {
-                                        val ok = withContext(Dispatchers.Default) {
-                                            TemplateManager.verifySingleAnswer(t, q.id, raw)
-                                        }
-                                        verifyResults[q.id] = ok
-                                        Toast.makeText(
-                                            context,
-                                            if (ok) "✓ 答案正确" else "✗ 答案错误",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            ) { Text("验证") }
-                        }
                     }
-                }
+                )
             }
 
-            Spacer(Modifier.height(24.dp))
-
             // 恢复结果
-            if (recoveryResult != null) {
-                when (val r = recoveryResult!!) {
-                    is RecoveryResult.Success -> {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(Modifier.width(8.dp))
+            recoveryResult?.let { result ->
+                item {
+                    when (result) {
+                        is RecoveryResult.Success -> {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
                                     Text(
-                                        "恢复成功！",
-                                        style = MaterialTheme.typography.titleMedium,
+                                        "恢复成功!",
+                                        style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold
                                     )
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "正确回答：${r.correctCount} 题",
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Spacer(Modifier.height(12.dp))
-                                Text(
-                                    "您的 Passphrase（请手动抄写，禁止复制）：",
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    ),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        2.dp, MaterialTheme.colorScheme.primary
+                                    Text("正确答案: ${result.correctCount}/${result.totalAnswered}")
+                                    Text(
+                                        "请手动抄写以下密码:",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer
                                     )
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp)) {
-                                        // 每 4 个字符换一行显示，便于手动抄写；全程不提供复制按钮
-                                        val pass = r.passphrase
-                                        val chunkSize = 4
-                                        val chunked = pass.chunked(chunkSize)
-                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            chunked.forEachIndexed { rowIdx, chunk ->
-                                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                    chunk.forEachIndexed { i, ch ->
-                                                        val absoluteIdx = rowIdx * chunkSize + i + 1
-                                                        AssistChip(
-                                                            onClick = {},
-                                                            label = {
-                                                                Text(
-                                                                    "$absoluteIdx. $ch",
-                                                                    fontWeight = FontWeight.Bold
-                                                                )
-                                                            },
-                                                            enabled = false
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Spacer(Modifier.height(16.dp))
-                                        Text(
-                                            "⚠️ 请立即用笔和纸抄写下以上 ${pass.length} 位 Passphrase（顺序不能错，字符要完全一致），" +
-                                                    "退出本页面后内容将被清空！本应用禁止复制粘贴，只能手写。",
-                                            color = MaterialTheme.colorScheme.error,
-                                            style = MaterialTheme.typography.bodySmall,
+
+                                    // 密码显示
+                                    val passphrase = result.passphrase
+                                    val displayText = if (showPassphrase) passphrase else "•".repeat(passphrase.length)
+                                    Text(
+                                        displayText,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surface)
+                                            .padding(16.dp),
+                                        style = MaterialTheme.typography.titleLarge.copy(
+                                            fontFamily = FontFamily.Monospace,
                                             fontWeight = FontWeight.Bold
+                                        )
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        TextButton(onClick = { showPassphrase = !showPassphrase }) {
+                                            Icon(
+                                                if (showPassphrase) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                contentDescription = null
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(if (showPassphrase) "隐藏" else "显示")
+                                        }
+                                        Text(
+                                            "退出即清空",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer
                                         )
                                     }
                                 }
                             }
                         }
-                    }
-
-                    is RecoveryResult.Failure -> {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            )
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error
-                                    )
-                                    Spacer(Modifier.width(8.dp))
+                        is RecoveryResult.Failure -> {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
                                     Text(
                                         "恢复失败",
+                                        style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onErrorContainer
                                     )
+                                    Text(
+                                        result.reason,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Text(
+                                        "正确答案: ${result.correctCount}/${result.threshold}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
                                 }
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "原因：${r.reason}",
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "正确答案数：${r.correctCount} / 需要 ${r.threshold}",
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnswerInputCard(
+    question: com.mepass.app.model.Question,
+    answer: String,
+    verifyResult: Boolean?,
+    onAnswerChange: (String) -> Unit,
+    onVerify: () -> Unit
+) {
+    val containerColor = when (verifyResult) {
+        true -> MaterialTheme.colorScheme.primaryContainer
+        false -> MaterialTheme.colorScheme.errorContainer
+        null -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = containerColor)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                question.text,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            question.hint?.let {
+                Text(
+                    "提示: $it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            OutlinedTextField(
+                value = answer,
+                onValueChange = onAnswerChange,
+                label = { Text("答案") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onVerify,
+                    enabled = answer.isNotBlank()
+                ) {
+                    Text("验证")
+                }
+                verifyResult?.let {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        if (it) "✓ 正确" else "✗ 错误",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (it) Color(0xFF2E7D32) else Color(0xFFC62828)
+                    )
                 }
             }
         }

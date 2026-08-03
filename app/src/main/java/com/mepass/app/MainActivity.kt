@@ -1,191 +1,108 @@
 package com.mepass.app
 
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.mepass.app.model.Template
 import com.mepass.app.security.PrivacyGuard
-import com.mepass.app.security.ScreenSensitiveState
-import com.mepass.app.ui.screens.HomeScreen
 import com.mepass.app.ui.screens.CreateTemplateScreen
+import com.mepass.app.ui.screens.HomeScreen
 import com.mepass.app.ui.screens.ImportTemplateScreen
 import com.mepass.app.ui.screens.RecoverScreen
 import com.mepass.app.ui.theme.MePassTheme
 
+/**
+ * MePass 入口 Activity
+ *
+ * 职责：
+ * - 装载 Compose 导航
+ * - 管理 activeTemplate 状态
+ * - 生命周期隐私清理（onPause 时清空敏感数据）
+ */
 class MainActivity : ComponentActivity() {
-
-    /** 当前加载的模板引用（可能包含验证哈希等敏感数据） */
-    private var activeTemplateRef: Template? = null
-    /** 各Screen注册的具体清理动作引用 */
-    private val screenClearHooks = mutableMapOf<String, () -> Unit>()
-    /** 生命周期观察者（用于清理与重新应用隐私策略 */
-    private val lifecycleObserver = LifecycleEventObserver { _, event ->
-        when (event) {
-            Lifecycle.Event.ON_PAUSE -> {
-                Log.i("MePass-Lifecycle", "ON_PAUSE 触发全局敏感数据清理")
-                PrivacyGuard.wipeAllSensitiveData()
-                PrivacyGuard.wipeAllSensitiveData()
-            }
-            Lifecycle.Event.ON_STOP -> {
-                Log.i("MePass-Lifecycle", "ON_STOP 再次触发清理")
-                PrivacyGuard.wipeAllSensitiveData()
-            }
-            Lifecycle.Event.ON_RESUME -> {
-                // 每次重新进入前台也重新应用FLAG_SECURE，避免中间被hook清除
-                PrivacyGuard.applySecureWindowPolicy(this@MainActivity)
-            }
-            else -> {}
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PrivacyGuard.applySecureWindow(this)
 
-        // ⚠️ 严格隐私策略：必须在setContent之前
-        PrivacyGuard.applySecureWindowPolicy(this)
-
-        // 检查overlay / 安装来源是否可疑（弹窗提示，不阻止使用）
-        runCatching {
-            if (PrivacyGuard.isOverlayDangerous(this)) {
-                Log.w("MePass", "安装来源非官方应用商店，请注意风险")
+        // 生命周期监听：onPause 时清空敏感数据
+        lifecycle.addObserver(object : LifecycleEventObserver {
+            override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+                if (event == Lifecycle.Event.ON_PAUSE) {
+                    PrivacyGuard.wipeAllSensitiveData()
+                }
             }
-        }
-
-        // 注册全局清理：清空Activity内强引用
-        PrivacyGuard.registerWipeCallback {
-            Log.i("MePass-MainActivity", "执行Activity级内存清理")
-            activeTemplateRef = null
-            screenClearHooks.values.forEach { runCatching { it() } }
-            screenClearHooks.clear()
-            ScreenSensitiveState.clearTempPassphrase()
-            Runtime.getRuntime().gc()
-            Runtime.getRuntime().gc()
-        }
-
-        // 生命周期事件观察（非Compose方式，不依赖 LocalLifecycleOwner）
-        lifecycle.addObserver(lifecycleObserver)
+        })
 
         setContent {
             MePassTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    MePassApp(
-                        onActiveTemplateChanged = { t -> activeTemplateRef = t },
-                        registerScreenClearHook = { key, fn -> screenClearHooks[key] = fn },
-                        unregisterScreenClearHook = { key -> screenClearHooks.remove(key) }
-                    )
+                Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+                    MePassApp()
                 }
             }
         }
     }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        PrivacyGuard.wipeAllSensitiveData()
-    }
-
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        // 内存不足或UI隐藏时立刻清理
-        if (level >= TRIM_MEMORY_UI_HIDDEN) {
-            PrivacyGuard.wipeAllSensitiveData()
-        }
-    }
-}
-
-object AppRoutes {
-    const val HOME = "home"
-    const val CREATE_TEMPLATE = "create_template"
-    const val IMPORT_TEMPLATE = "import_template"
-    const val RECOVER = "recover"
 }
 
 @Composable
-fun MePassApp(
-    onActiveTemplateChanged: (Template?) -> Unit = {},
-    registerScreenClearHook: (String, () -> Unit) -> Unit = { _, _ -> },
-    unregisterScreenClearHook: (String) -> Unit = {}
-) {
+private fun MePassApp() {
     val navController = rememberNavController()
     var activeTemplate by remember { mutableStateOf<Template?>(null) }
 
-    // 当 activeTemplate 变化时，同步回 Activity 引用（防止remember只在Compose内）
-    LaunchedEffect(activeTemplate) { onActiveTemplateChanged(activeTemplate) }
-
-    // 注册全局清理钩子：清空 activeTemplate 本身
-    DisposableEffect(Unit) {
-        val key = "MePassApp_activeTemplate"
-        registerScreenClearHook(key) {
-            // 注意：在Compose重组上下文之外不能直接改rememberState，
-            // 因此使用活动级的另一个引用清除，这里只能记录希望清理的动作
-            activeTemplate = null
-            onActiveTemplateChanged(null)
-        }
-        // 同时注册到 PrivacyGuard
-        val callback: () -> Unit = {
-            activeTemplate = null
-            onActiveTemplateChanged(null)
-        }
-        PrivacyGuard.registerWipeCallback(callback)
-        onDispose {
-            PrivacyGuard.unregisterWipeCallback(callback)
-            unregisterScreenClearHook(key)
-        }
-    }
-
-    NavHost(navController = navController, startDestination = AppRoutes.HOME) {
-        composable(AppRoutes.HOME) {
+    NavHost(
+        navController = navController,
+        startDestination = "home"
+    ) {
+        composable("home") {
             HomeScreen(
-                navController = navController,
                 activeTemplate = activeTemplate,
-                onClearTemplate = {
-                    activeTemplate = null
-                    onActiveTemplateChanged(null)
-                }
+                onCreateTemplate = { navController.navigate("create_template") },
+                onImportTemplate = { navController.navigate("import_template") },
+                onRecover = {
+                    activeTemplate?.let {
+                        navController.navigate("recover")
+                    }
+                },
+                onRemoveTemplate = { activeTemplate = null }
             )
         }
-        composable(AppRoutes.CREATE_TEMPLATE) {
+
+        composable("create_template") {
             CreateTemplateScreen(
-                navController = navController,
                 onTemplateCreated = { template ->
                     activeTemplate = template
-                    onActiveTemplateChanged(template)
+                    navController.popBackStack()
                 },
-                registerClearHook = registerScreenClearHook,
-                unregisterClearHook = unregisterScreenClearHook
+                onBack = { navController.popBackStack() }
             )
         }
-        composable(AppRoutes.IMPORT_TEMPLATE) {
+
+        composable("import_template") {
             ImportTemplateScreen(
-                navController = navController,
                 onTemplateImported = { template ->
                     activeTemplate = template
-                    onActiveTemplateChanged(template)
+                    navController.popBackStack()
                 },
-                registerClearHook = registerScreenClearHook,
-                unregisterClearHook = unregisterScreenClearHook
+                onBack = { navController.popBackStack() }
             )
         }
-        composable(AppRoutes.RECOVER) {
-            RecoverScreen(
-                navController = navController,
-                template = activeTemplate,
-                registerClearHook = registerScreenClearHook,
-                unregisterClearHook = unregisterScreenClearHook
-            )
+
+        composable("recover") {
+            activeTemplate?.let { template ->
+                RecoverScreen(
+                    template = template,
+                    onBack = { navController.popBackStack() }
+                )
+            }
         }
     }
 }

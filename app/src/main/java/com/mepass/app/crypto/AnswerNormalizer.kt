@@ -3,105 +3,59 @@ package com.mepass.app.crypto
 import java.text.Normalizer
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
-import java.util.Locale
 
 /**
  * 答案规范化器
- * 确保相同含义的答案生成一致的哈希值
- * 处理：大小写、空格、标点、日期格式、全半角、 Unicode 规范化等
+ *
+ * 将用户输入的答案规范化为统一的内部表示，避免因大小写、空格、标点、
+ * 全角/半角、日期格式等差异导致验证失败。
+ *
+ * 规范化流程：
+ * 1. Unicode NFKC 规范化（全角→半角）
+ * 2. 尝试日期识别（多种格式 → yyyyMMdd）
+ * 3. 转小写
+ * 4. 移除所有标点符号和符号字符
+ * 5. 合并并移除所有空白
  */
 object AnswerNormalizer {
 
-    private val whitespaceRegex = Regex("\\s+")
-    private val punctuationRegex = Regex("[\\p{Punct}\\p{S}]+")
-    private val dateFormatters = listOf(
-        DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.getDefault()),
-        DateTimeFormatter.ofPattern("yyyy/MM/dd", Locale.getDefault()),
-        DateTimeFormatter.ofPattern("yyyy.MM.dd", Locale.getDefault()),
-        DateTimeFormatter.ofPattern("yyyyMMdd", Locale.getDefault()),
-        DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.CHINA),
-        DateTimeFormatter.ofPattern("MM-dd-yyyy", Locale.US),
-        DateTimeFormatter.ofPattern("MM/dd/yyyy", Locale.US),
-        DateTimeFormatter.ofPattern("dd-MM-yyyy", Locale.getDefault()),
-        DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault())
+    private val DATE_FORMATS = listOf(
+        "yyyy-M-d", "yyyy/M/d", "yyyy.M.d",
+        "yyyy-MM-dd", "yyyy/MM/dd", "yyyy.MM.dd",
+        "d-M-yyyy", "d/M/yyyy", "d.M.yyyy",
+        "dd-MM-yyyy", "dd/MM/yyyy", "dd.MM.yyyy",
+        "M-d-yyyy", "M/d/yyyy", "M.d.yyyy",
+        "MM-dd-yyyy", "MM/dd/yyyy", "MM.dd.yyyy"
     )
-    private val canonicalDateFormatter = DateTimeFormatter.ofPattern("yyyyMMdd", Locale.getDefault())
 
-    /**
-     * 完整规范化流程
-     */
     fun normalize(raw: String): String {
-        var result = raw
-
-        // 1. Unicode NFC 规范化（处理全角/半角、组合字符）
-        result = Normalizer.normalize(result, Normalizer.Form.NFKC)
-
-        // 2. 尝试日期规范化（如果看起来像日期）
-        result = tryNormalizeDate(result)
-
-        // 3. 转小写（对于字母语言），保留CJK字符
-        result = result.lowercase(Locale.getDefault())
-
-        // 4. 移除所有标点符号和特殊字符
-        result = punctuationRegex.replace(result, "")
-
-        // 5. 合并并移除所有空白字符
-        result = whitespaceRegex.replace(result, "")
-        result = result.trim()
-
-        return result
+        // 1. NFKC 规范化
+        var s = Normalizer.normalize(raw, Normalizer.Form.NFKC)
+        // 2. 尝试日期规范化
+        s = tryNormalizeDate(s)
+        // 3. 转小写
+        s = s.lowercase()
+        // 4. 移除标点和符号
+        s = s.replace(Regex("[\\p{Punct}\\p{S}]"), "")
+        // 5. 移除所有空白
+        s = s.replace(Regex("\\s+"), "")
+        return s
     }
 
-    /**
-     * 尝试将看起来像日期的字符串规范化为 yyyyMMdd 格式
-     */
-    private fun tryNormalizeDate(text: String): String {
-        // 快速过滤：太短或不含日期特征
-        val clean = text.trim()
-        if (clean.length < 6 || clean.length > 20) return text
-
-        for (formatter in dateFormatters) {
+    /** 尝试将日期字符串统一为 yyyyMMdd 格式 */
+    private fun tryNormalizeDate(s: String): String {
+        val trimmed = s.trim()
+        for (pattern in DATE_FORMATS) {
             try {
-                val date = LocalDate.parse(clean, formatter)
-                return date.format(canonicalDateFormatter)
-            } catch (_: DateTimeParseException) {
+                val date = LocalDate.parse(
+                    trimmed,
+                    DateTimeFormatter.ofPattern(pattern)
+                )
+                return date.format(DateTimeFormatter.BASIC_ISO_DATE)
+            } catch (_: Exception) {
                 // 继续尝试下一个格式
             }
         }
-        return text
-    }
-
-    /**
-     * 仅做基础规范化（用于即时预览对比）
-     */
-    fun normalizeLight(raw: String): String {
-        return raw
-            .let { Normalizer.normalize(it, Normalizer.Form.NFKC) }
-            .lowercase(Locale.getDefault())
-            .let { whitespaceRegex.replace(it, "") }
-            .trim()
-    }
-
-    /**
-     * 纯数字金额规范化
-     * "￥5,000.00元" -> "5000"
-     * "5000块" -> "5000"
-     */
-    fun normalizeAmount(raw: String): String {
-        var result = raw
-        // 提取数字部分（支持小数点）
-        val numberRegex = Regex("[0-9]+(\\.[0-9]+)?")
-        val match = numberRegex.find(result)
-        if (match != null) {
-            result = match.value
-            // 去除小数部分如果是.00
-            if (result.endsWith(".00") || result.endsWith(".0")) {
-                result = result.substringBefore(".")
-            }
-            return result
-        }
-        // 中文数字转阿拉伯数字的简化处理
-        return normalize(result)
+        return s
     }
 }

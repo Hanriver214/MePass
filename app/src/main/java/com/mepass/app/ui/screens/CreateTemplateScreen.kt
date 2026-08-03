@@ -1,26 +1,27 @@
 package com.mepass.app.ui.screens
 
-import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavController
+import com.mepass.app.template.TemplateManager
 import com.mepass.app.model.PresetQuestions
 import com.mepass.app.model.Question
-import com.mepass.app.template.TemplateManager
+import com.mepass.app.model.Template
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,70 +29,63 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateTemplateScreen(
-    navController: NavController,
-    onTemplateCreated: (com.mepass.app.model.Template) -> Unit,
-    registerClearHook: (String, () -> Unit) -> Unit = { _, _ -> },
-    unregisterClearHook: (String) -> Unit = {}
+    onTemplateCreated: (Template) -> Unit,
+    onBack: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+
     var templateName by remember { mutableStateOf("我的密码恢复模板") }
-    var threshold by remember { mutableStateOf(3) }
-    var enableAes by remember { mutableStateOf(false) }
-    var aesPassword by remember { mutableStateOf("") }
+    var questions by remember { mutableStateOf(listOf<Question>()) }
+    var answers by remember { mutableStateOf(mapOf<String, String>()) }
+    var threshold by remember { mutableStateOf(1f) }
     var isGenerating by remember { mutableStateOf(false) }
-
-    // 选中的问题与答案对 (questionId -> Pair(Question, answer))
-    val selectedQAs = remember {
-        mutableStateMapOf<String, Pair<Question, String>>()
-    }
-
-    // 展示预设问题选择器
     var showPresetPicker by remember { mutableStateOf(false) }
-    // 自定义问题对话框
     var showCustomDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("创建新模板", fontWeight = FontWeight.Bold) },
+                title = { Text("创建新模板") },
                 navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
+                    IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
                 actions = {
                     TextButton(
                         onClick = {
-                            coroutineScope.launch {
-                                generateTemplate(
-                                    context = context,
-                                    templateName = templateName,
-                                    selectedQAs = selectedQAs.values.toList(),
-                                    threshold = threshold,
-                                    enableAes = enableAes,
-                                    aesPassword = aesPassword,
-                                    onLoading = { isGenerating = it },
-                                    onSuccess = { template ->
-                                        onTemplateCreated(template)
-                                        Toast.makeText(
-                                            context,
-                                            "模板创建成功！可到「恢复 Passphrase」测试，或使用导出功能保存 JSON",
-                                            Toast.LENGTH_LONG
-                                        ).show()
+                            if (questions.isEmpty()) {
+                                Toast.makeText(context, "请至少添加 1 个问题", Toast.LENGTH_SHORT).show()
+                                return@TextButton
+                            }
+                            if (answers.any { it.value.isBlank() }) {
+                                Toast.makeText(context, "请填写所有答案", Toast.LENGTH_SHORT).show()
+                                return@TextButton
+                            }
+                            scope.launch {
+                                isGenerating = true
+                                try {
+                                    val template = withContext(Dispatchers.Default) {
+                                        TemplateManager.createTemplate(
+                                            name = templateName,
+                                            questionAnswers = questions.map { it to (answers[it.id] ?: "") },
+                                            threshold = threshold.toInt().coerceAtLeast(1)
+                                        )
                                     }
-                                )
+                                    onTemplateCreated(template)
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "生成失败: ${e.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                } finally {
+                                    isGenerating = false
+                                }
                             }
                         },
-                        enabled = !isGenerating && selectedQAs.size >= threshold
+                        enabled = !isGenerating
                     ) {
-                        if (isGenerating) {
-                            CircularProgressIndicator(Modifier.size(20.dp))
-                        } else {
-                            Icon(Icons.Default.Save, contentDescription = "生成")
-                            Spacer(Modifier.width(4.dp))
-                            Text("生成模板")
-                        }
+                        Text("生成模板")
                     }
                 }
             )
@@ -99,367 +93,282 @@ fun CreateTemplateScreen(
     ) { padding ->
         Column(
             modifier = Modifier
-                .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 模板名称
+            // 模板名
             OutlinedTextField(
                 value = templateName,
                 onValueChange = { templateName = it },
                 label = { Text("模板名称") },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
 
             // 门限配置
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = "恢复门限设置",
+                        "门限配置: ${threshold.toInt()} / ${questions.size}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "至少正确回答多少个问题才能恢复密码（k/N 门限）",
-                        style = MaterialTheme.typography.bodySmall,
+                        "需要 ${threshold.toInt()} 个正确答案才能恢复密码",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(12.dp))
-                    if (selectedQAs.size > 0) {
-                        Text("当前问题数 N = ${selectedQAs.size}，门限 k 范围：1 ~ ${selectedQAs.size}")
-                        Spacer(Modifier.height(8.dp))
+                    if (questions.size >= 2) {
                         Slider(
-                            value = threshold.toFloat(),
-                            onValueChange = { threshold = it.coerceIn(1f, selectedQAs.size.toFloat()).toInt() },
-                            valueRange = 1f..selectedQAs.size.toFloat(),
-                            steps = (selectedQAs.size - 2).coerceAtLeast(0)
-                        )
-                        Text(
-                            text = "当前门限：$threshold / ${selectedQAs.size}（遗忘 ${selectedQAs.size - threshold} 个仍可恢复）",
-                            fontWeight = FontWeight.Bold
-                        )
-                    } else {
-                        Text("请先添加问题", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-
-            // 可选 AES 加密
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "启用模板 AES 加密标记",
-                            modifier = Modifier.weight(1f),
-                            fontWeight = FontWeight.Bold
-                        )
-                        Switch(checked = enableAes, onCheckedChange = { enableAes = it })
-                    }
-                    Text(
-                        text = "标记模板要求额外的加密保护（导出的 JSON 可附加 AES-GCM 加密参数）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (enableAes) {
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
-                            value = aesPassword,
-                            onValueChange = { aesPassword = it },
-                            label = { Text("AES 加密密码（可选）") },
-                            modifier = Modifier.fillMaxWidth()
+                            value = threshold,
+                            onValueChange = { threshold = it },
+                            valueRange = 1f..questions.size.toFloat(),
+                            steps = questions.size - 2
                         )
                     }
                 }
             }
 
-            // 问题列表管理
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "问题列表 (${selectedQAs.size})",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { showPresetPicker = true }) {
-                            Icon(Icons.Default.Add, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text("从预设添加")
-                        }
-                        OutlinedButton(onClick = { showCustomDialog = true }) {
-                            Icon(Icons.Default.Add, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text("自定义问题")
+            // 问题列表
+            questions.forEachIndexed { index, question ->
+                QuestionCard(
+                    question = question,
+                    answer = answers[question.id] ?: "",
+                    onAnswerChange = { newAnswer ->
+                        answers = answers + (question.id to newAnswer)
+                    },
+                    onDelete = {
+                        questions = questions.filterNot { it.id == question.id }
+                        answers = answers - question.id
+                        if (threshold > questions.size) {
+                            threshold = questions.size.toFloat().coerceAtLeast(1f)
                         }
                     }
-                }
+                )
             }
 
-            // 已选问题列表
-            selectedQAs.values.forEachIndexed { index, (q, answer) ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+            // 添加问题按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { showPresetPicker = true },
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "${index + 1}. ",
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = q.text,
-                                modifier = Modifier.weight(1f),
-                                fontWeight = FontWeight.Medium
-                            )
-                            IconButton(onClick = { selectedQAs.remove(q.id) }) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "删除",
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                        if (q.hint != null) {
-                            Text(
-                                text = "提示：${q.hint}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(4.dp))
-                        }
-                        OutlinedTextField(
-                            value = answer,
-                            onValueChange = { newAns ->
-                                selectedQAs[q.id] = q to newAns
-                            },
-                            label = { Text("您的答案") },
-                            modifier = Modifier.fillMaxWidth(),
-                            isError = answer.isBlank()
-                        )
-                    }
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("从预设添加")
                 }
+                OutlinedButton(
+                    onClick = { showCustomDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("自定义问题")
+                }
+            }
+
+            if (isGenerating) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    "正在生成模板... (Argon2id 计算)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
             }
         }
     }
 
-    // 预设问题选择对话框
     if (showPresetPicker) {
         PresetPickerDialog(
-            onDismiss = { showPresetPicker = false },
+            selectedIds = questions.filter { !it.isCustom }.map { it.id }.toSet(),
             onConfirm = { selectedIds ->
-                selectedIds.forEach { presetId ->
-                    val preset = PresetQuestions.getById(presetId)
-                    if (preset != null && !selectedQAs.contains(presetId)) {
-                        selectedQAs[presetId] = preset to ""
-                    }
-                }
-                // 自动调整门限到合理值
-                if (threshold > selectedQAs.size && selectedQAs.size > 0) {
-                    threshold = (selectedQAs.size * 0.6).toInt().coerceAtLeast(1)
+                val currentIds = questions.map { it.id }.toSet()
+                val toAdd = selectedIds.filter { it !in currentIds }
+                val newQuestions = toAdd.mapNotNull { PresetQuestions.getById(it) }
+                questions = questions + newQuestions
+                if (questions.size >= 1) {
+                    threshold = (questions.size * 0.6f).toFloat().coerceIn(1f, questions.size.toFloat())
                 }
                 showPresetPicker = false
-            }
+            },
+            onDismiss = { showPresetPicker = false }
         )
     }
 
-    // 自定义问题对话框
     if (showCustomDialog) {
         CustomQuestionDialog(
-            onDismiss = { showCustomDialog = false },
-            onConfirm = { questionText, hint ->
-                val newQ = Question(
-                    id = Question.generateId(),
-                    text = questionText,
-                    isCustom = true,
-                    hint = hint.ifBlank { null }
+            onConfirm = { text ->
+                val newQuestion = Question(
+                    id = "custom_${System.currentTimeMillis()}",
+                    text = text,
+                    isCustom = true
                 )
-                selectedQAs[newQ.id] = newQ to ""
-                if (threshold > selectedQAs.size && selectedQAs.size > 0) {
-                    threshold = (selectedQAs.size * 0.6).toInt().coerceAtLeast(1)
+                questions = questions + newQuestion
+                if (questions.size >= 1) {
+                    threshold = (questions.size * 0.6f).toFloat().coerceIn(1f, questions.size.toFloat())
                 }
                 showCustomDialog = false
-            }
+            },
+            onDismiss = { showCustomDialog = false }
         )
     }
 }
 
 @Composable
-private fun PresetPickerDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (Set<String>) -> Unit
+private fun QuestionCard(
+    question: Question,
+    answer: String,
+    onAnswerChange: (String) -> Unit,
+    onDelete: () -> Unit
 ) {
-    // 用 SnapshotStateList + toSet，避免依赖 Compose 1.6+ 的 mutableStateSetOf
-    val selectedList = remember { mutableStateListOf<String>() }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    question.text,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, contentDescription = "删除")
+                }
+            }
+            question.hint?.let {
+                Text(
+                    "提示: $it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            OutlinedTextField(
+                value = answer,
+                onValueChange = onAnswerChange,
+                label = { Text("答案") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PresetPickerDialog(
+    selectedIds: Set<String>,
+    onConfirm: (Set<String>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val currentSelection = remember { mutableStateListOf(*selectedIds.toTypedArray()) }
+    var searchQuery by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择预设隐私问题", fontWeight = FontWeight.Bold) },
+        title = { Text("选择预设问题") },
         text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                PresetQuestions.presetQuestions.forEach { q ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Checkbox(
-                            checked = selectedList.contains(q.id),
-                            onCheckedChange = { checked ->
-                                if (checked) {
-                                    if (!selectedList.contains(q.id)) selectedList.add(q.id)
-                                } else {
-                                    selectedList.remove(q.id)
-                                }
-                            }
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(q.text, style = MaterialTheme.typography.bodyMedium)
-                            if (q.hint != null) {
-                                Text(
-                                    text = "提示：${q.hint}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("搜索") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier.height(300.dp)
+                ) {
+                    val filtered = PresetQuestions.all.filter {
+                        it.text.contains(searchQuery, ignoreCase = true)
                     }
-                    HorizontalDivider()
+                    items(filtered) { question ->
+                        val isSelected = question.id in currentSelection
+                        ListItem(
+                            headlineContent = { Text(question.text) },
+                            supportingContent = question.hint?.let { hint ->
+                                { Text("提示: $hint", style = MaterialTheme.typography.bodySmall) }
+                            },
+                            trailingContent = {
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = { checked ->
+                                        if (checked) {
+                                            currentSelection.add(question.id)
+                                        } else {
+                                            currentSelection.remove(question.id)
+                                        }
+                                    }
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selectedList.toSet()) }) {
-                Text("添加 (${selectedList.size})")
+            TextButton(onClick = { onConfirm(currentSelection.toSet()) }) {
+                Text("确定")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
         }
     )
 }
 
 @Composable
 private fun CustomQuestionDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
 ) {
     var questionText by remember { mutableStateOf("") }
-    var hint by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加自定义问题", fontWeight = FontWeight.Bold) },
+        title = { Text("自定义问题") },
         text = {
-            Column {
-                OutlinedTextField(
-                    value = questionText,
-                    onValueChange = { questionText = it },
-                    label = { Text("问题内容") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = hint,
-                    onValueChange = { hint = it },
-                    label = { Text("输入提示（可选）") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-            }
+            OutlinedTextField(
+                value = questionText,
+                onValueChange = { questionText = it },
+                label = { Text("问题内容") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (questionText.isNotBlank()) onConfirm(questionText.trim(), hint.trim())
-                },
-                enabled = questionText.isNotBlank()
-            ) { Text("添加") }
+                    if (questionText.isNotBlank()) {
+                        onConfirm(questionText.trim())
+                    }
+                }
+            ) {
+                Text("添加")
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
         }
     )
-}
-
-private suspend fun generateTemplate(
-    context: Context,
-    templateName: String,
-    selectedQAs: List<Pair<Question, String>>,
-    threshold: Int,
-    enableAes: Boolean,
-    aesPassword: String,
-    onLoading: (Boolean) -> Unit,
-    onSuccess: (com.mepass.app.model.Template) -> Unit
-) {
-    if (templateName.isBlank()) {
-        Toast.makeText(context, "请填写模板名称", Toast.LENGTH_SHORT).show()
-        return
-    }
-    val blanks = selectedQAs.filter { it.second.isBlank() }
-    if (blanks.isNotEmpty()) {
-        Toast.makeText(context, "问题「${blanks.first().first.text}」尚未填写答案", Toast.LENGTH_SHORT).show()
-        return
-    }
-    if (selectedQAs.size < threshold) {
-        Toast.makeText(context, "问题数量不足", Toast.LENGTH_SHORT).show()
-        return
-    }
-
-    onLoading(true)
-    val template = withContext(Dispatchers.Default) {
-        try {
-            TemplateManager.createTemplate(
-                templateName = templateName,
-                qaPairs = selectedQAs,
-                threshold = threshold,
-                enableAes = enableAes,
-                aesPassword = aesPassword
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
-    onLoading(false)
-
-    if (template != null) {
-        val json = TemplateManager.exportTemplate(template)
-        // 保存到 Downloads 目录
-        try {
-            val filename = "MePass_${template.name.replace(Regex("""[^\w\-]"""), "_")}_${System.currentTimeMillis()}.json"
-            val dir = context.getExternalFilesDir(null)
-            if (dir != null) {
-                val file = java.io.File(dir, filename)
-                file.writeText(json, Charsets.UTF_8)
-                Toast.makeText(
-                    context,
-                    "模板已保存到：${file.absolutePath}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(context, "保存文件失败：${e.message}", Toast.LENGTH_LONG).show()
-        }
-        onSuccess(template)
-    } else {
-        Toast.makeText(context, "生成模板失败", Toast.LENGTH_SHORT).show()
-    }
 }
