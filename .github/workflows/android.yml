@@ -339,6 +339,9 @@ jobs:
           "$ZIPALIGN" -c -p 4 "$ALIGNED_APK" && echo "✓ zipalign 验证通过" || { echo "✗ zipalign 验证失败"; exit 1; }
           
           # 4) 用 apksigner 签名（在已对齐的 APK 上签名，保留 extra field）
+          #    禁用 v1 签名：v1 验证在之前的版本中失败（可能是 JKS 格式兼容性问题），
+          #    v2/v3 对 minSdk=24 (Android 7.0) 已足够，且更安全。
+          #    无效的 v1 签名可能导致定制 ROM 安装器崩溃。
           echo "=== 用 apksigner 签名 ==="
           SIGNED_APK="app/build/outputs/apk/release/app-release.apk"
           STORE_FILE="${MEPASS_RELEASE_STORE_FILE}"
@@ -355,7 +358,7 @@ jobs:
               --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
               --ks-pass "file:$STORE_PW_FILE" \
               --key-pass "file:$KEY_PW_FILE" \
-              --v1-signing-enabled true \
+              --v1-signing-enabled false \
               --v2-signing-enabled true \
               --v3-signing-enabled true \
               --out "$SIGNED_APK" \
@@ -375,7 +378,7 @@ jobs:
                   --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
                   --ks-pass "file:$STORE_PW_FILE" \
                   --key-pass "file:$KEY_PW_FILE" \
-                  --v1-signing-enabled true \
+                  --v1-signing-enabled false \
                   --v2-signing-enabled true \
                   --v3-signing-enabled true \
                   --out "$SIGNED_APK" \
