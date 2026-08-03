@@ -136,7 +136,7 @@ object Argon2Kdf {
      */
     fun deriveEncryptionKey(normalizedAnswer: String, salt: ByteArray): ByteArray {
         val keys = deriveKeys(normalizedAnswer, salt)
-        val key = keys.encryptionKey.copy()
+        val key = keys.encryptionKey.copyOf()
         keys.clear()
         return key
     }
