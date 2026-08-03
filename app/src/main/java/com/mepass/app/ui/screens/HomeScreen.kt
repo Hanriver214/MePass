@@ -40,17 +40,24 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var pendingTemplate by remember { mutableStateOf<Template?>(null) }
+    var pendingPassword by remember { mutableStateOf<String?>(null) }
+    var showExportOptions by remember { mutableStateOf<Template?>(null) }
 
     // SAF 文件创建（导出）
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         val template = pendingTemplate
+        val password = pendingPassword
         if (uri != null && template != null) {
             scope.launch {
                 runCatching {
                     val json = withContext(Dispatchers.Default) {
-                        TemplateManager.exportTemplate(template)
+                        if (password != null) {
+                            TemplateManager.exportTemplateEncrypted(template, password)
+                        } else {
+                            TemplateManager.exportTemplate(template)
+                        }
                     }
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { out ->
@@ -58,22 +65,23 @@ fun HomeScreen(
                         }
                     }
                 }.onSuccess {
-                    Toast.makeText(context, "模板已导出", Toast.LENGTH_SHORT).show()
+                    val msg = if (password != null) "模板已加密导出" else "模板已导出"
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                 }.onFailure { e ->
                     Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
                 pendingTemplate = null
+                pendingPassword = null
             }
         } else {
             pendingTemplate = null
+            pendingPassword = null
         }
     }
 
-    /** 触发导出：弹出系统文件保存对话框 */
+    /** 触发导出：先弹出加密选项对话框 */
     val exportTemplate: (Template) -> Unit = { template ->
-        pendingTemplate = template
-        val safeName = template.name.replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
-        exportLauncher.launch("MePass_$safeName.json")
+        showExportOptions = template
     }
 
     Scaffold(
@@ -201,6 +209,22 @@ fun HomeScreen(
                 onClick = onRecover
             )
         }
+    }
+
+    // 导出加密选项对话框
+    showExportOptions?.let { template ->
+        ExportOptionsDialog(
+            templateName = template.name,
+            onConfirm = { password ->
+                showExportOptions = null
+                pendingTemplate = template
+                pendingPassword = password
+                val safeName = template.name.replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
+                val suffix = if (password != null) ".enc.json" else ".json"
+                exportLauncher.launch("MePass_$safeName$suffix")
+            },
+            onDismiss = { showExportOptions = null }
+        )
     }
 }
 

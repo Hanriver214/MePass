@@ -44,17 +44,24 @@ fun CreateTemplateScreen(
     var showPresetPicker by remember { mutableStateOf(false) }
     var showCustomDialog by remember { mutableStateOf(false) }
     var pendingExport by remember { mutableStateOf<Template?>(null) }
+    var pendingPassword by remember { mutableStateOf<String?>(null) }
+    var showExportOptions by remember { mutableStateOf<Template?>(null) }
 
     // 生成后立即导出：SAF 文件保存对话框
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         val template = pendingExport
+        val password = pendingPassword
         if (uri != null && template != null) {
             scope.launch {
                 runCatching {
                     val json = withContext(Dispatchers.Default) {
-                        TemplateManager.exportTemplate(template)
+                        if (password != null) {
+                            TemplateManager.exportTemplateEncrypted(template, password)
+                        } else {
+                            TemplateManager.exportTemplate(template)
+                        }
                     }
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { out ->
@@ -62,17 +69,20 @@ fun CreateTemplateScreen(
                         }
                     }
                 }.onSuccess {
-                    Toast.makeText(context, "模板已导出", Toast.LENGTH_SHORT).show()
+                    val msg = if (password != null) "模板已加密导出" else "模板已导出"
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                 }.onFailure { e ->
                     Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
                 pendingExport = null
+                pendingPassword = null
                 onTemplateCreated(template)
             }
         } else {
             // 用户取消导出，仍然设为当前模板
             pendingExport?.let {
                 pendingExport = null
+                pendingPassword = null
                 onTemplateCreated(it)
             }
         }
@@ -109,10 +119,8 @@ fun CreateTemplateScreen(
                                             threshold = threshold.toInt().coerceAtLeast(1)
                                         )
                                     }
-                                    // 生成成功后立即弹出导出对话框
-                                    pendingExport = template
-                                    val safeName = template.name.replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
-                                    exportLauncher.launch("MePass_$safeName.json")
+                                    // 生成成功后弹出加密导出选项对话框
+                                    showExportOptions = template
                                 } catch (e: Exception) {
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(context, "生成失败: ${e.message}", Toast.LENGTH_LONG).show()
@@ -257,6 +265,26 @@ fun CreateTemplateScreen(
                 showCustomDialog = false
             },
             onDismiss = { showCustomDialog = false }
+        )
+    }
+
+    // 导出加密选项对话框
+    showExportOptions?.let { template ->
+        ExportOptionsDialog(
+            templateName = template.name,
+            onConfirm = { password ->
+                showExportOptions = null
+                pendingExport = template
+                pendingPassword = password
+                val safeName = template.name.replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
+                val suffix = if (password != null) ".enc.json" else ".json"
+                exportLauncher.launch("MePass_$safeName$suffix")
+            },
+            onDismiss = {
+                showExportOptions = null
+                // 用户取消导出，仍然设为当前模板
+                onTemplateCreated(template)
+            }
         )
     }
 }

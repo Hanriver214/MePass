@@ -3,6 +3,7 @@ package com.mepass.app.template
 import com.mepass.app.crypto.AesGcm
 import com.mepass.app.crypto.AnswerNormalizer
 import com.mepass.app.crypto.Argon2Kdf
+import com.mepass.app.crypto.EncryptedExport
 import com.mepass.app.crypto.PassphraseGenerator
 import com.mepass.app.crypto.ShamirSss
 import com.mepass.app.model.Question
@@ -118,11 +119,46 @@ object TemplateManager {
         )
     }
 
-    /** 导出模板为 JSON 字符串 */
+    /** 导出模板为 JSON 字符串（明文） */
     fun exportTemplate(template: Template): String = json.encodeToString(template)
 
-    /** 从 JSON 字符串导入模板（包含完整性校验） */
-    fun importTemplate(jsonString: String): Result<Template> = runCatching {
+    /**
+     * 导出模板为加密封装 JSON 字符串（口令保护）
+     *
+     * 在明文模板 JSON 之外再套一层 Argon2id + AES-256-GCM 加密信封，
+     * 适合模板需要离开本机备份 / 传输的场景。
+     *
+     * @param password 用户口令
+     */
+    fun exportTemplateEncrypted(template: Template, password: String): String {
+        val plain = json.encodeToString(template)
+        return EncryptedExport.encrypt(plain, password)
+    }
+
+    /** 检测 JSON 字符串是否为加密封装格式（用于导入界面自适应） */
+    fun isEncryptedTemplate(jsonString: String): Boolean = EncryptedExport.isEncrypted(jsonString)
+
+    /**
+     * 从 JSON 字符串导入模板（自动识别明文 / 加密格式，含完整性校验）
+     *
+     * - 明文 JSON：[password] 参数被忽略，直接解析校验
+     * - 加密信封：必须提供正确口令，先解密再校验
+     *
+     * @param jsonString 模板 JSON（明文或加密封装）
+     * @param password 加密模板的解密口令；明文模板可传 null
+     */
+    fun importTemplate(jsonString: String, password: String? = null): Result<Template> = runCatching {
+        val plainJson = if (EncryptedExport.isEncrypted(jsonString)) {
+            require(!password.isNullOrBlank()) { "该模板已加密，请输入解密口令" }
+            EncryptedExport.decrypt(jsonString, password).getOrThrow()
+        } else {
+            jsonString
+        }
+        importTemplatePlain(plainJson)
+    }
+
+    /** 从明文 JSON 字符串导入模板（包含完整性校验） */
+    private fun importTemplatePlain(jsonString: String): Template {
         val template = json.decodeFromString<Template>(jsonString)
         require(template.version == Template.CURRENT_VERSION) {
             "模板版本不兼容（当前版本: ${Template.CURRENT_VERSION}, 模板版本: ${template.version}）"
@@ -130,7 +166,7 @@ object TemplateManager {
         require(IntegrityManager.verifyIntegrity(template)) {
             "模板完整性校验失败：可能已被篡改"
         }
-        template
+        return template
     }
 
     /**

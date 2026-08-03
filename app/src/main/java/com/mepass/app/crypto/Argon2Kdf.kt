@@ -19,9 +19,9 @@ import java.util.Base64
  * 2. [deriveKey]：从答案派生 AES-256 密钥（用于加密 Shamir 分片）
  */
 object Argon2Kdf {
-    private const val ITERATIONS = 3
-    private const val MEMORY_KB = 65536  // 64 MB
-    private const val PARALLELISM = 2
+    const val ITERATIONS = 3
+    const val MEMORY_KB = 65536  // 64 MB
+    const val PARALLELISM = 2
     private const val HASH_LENGTH = 32
     private const val SALT_LENGTH = 16
 
@@ -85,6 +85,25 @@ object Argon2Kdf {
             normalizedAnswer.toByteArray(Charsets.UTF_8),
             output
         )
+        return output
+    }
+
+    /**
+     * 从用户口令派生 AES-256 密钥（用于加密导出）
+     *
+     * 与 [deriveKey] 使用相同的 Argon2id 参数，但不做答案规范化——
+     * 口令按用户输入原样使用。调用方负责清零返回的密钥。
+     */
+    fun deriveKeyFromPassword(password: String, salt: ByteArray): ByteArray {
+        val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
+            .withIterations(ITERATIONS)
+            .withMemoryAsKB(MEMORY_KB)
+            .withParallelism(PARALLELISM)
+            .withSalt(salt)
+            .build()
+        val generator = Argon2BytesGenerator().apply { init(params) }
+        val output = ByteArray(HASH_LENGTH)
+        generator.generateBytes(password.toByteArray(Charsets.UTF_8), output)
         return output
     }
 
