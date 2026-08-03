@@ -258,6 +258,11 @@ jobs:
       - name: Build Release APK (AGP signingConfig with deterministic OIDC-derived keystore)
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
+      # ---- 同时构建 Debug APK 供用户对比测试（debug 签名 + 无 R8 混淆）----
+      # 如果 debug APK 能安装但 release 不能，说明问题在签名或 R8
+      - name: Build Debug APK (for comparison testing)
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
       # ---- 强制 Zipalign + 签名（正确顺序：unsigned → zipalign → sign）----
       # AGP 构建未签名 APK，CI 手动执行 zipalign + apksigner sign
       # 这是 Google 推荐的流程，确保 zipalign 的 extra field 不被签名过程剥离
@@ -416,7 +421,7 @@ jobs:
         run: |
           set -e
           mkdir -p release_out
-          # 1) 拷贝 APK（现在有 signingConfig，默认输出应为 app-release.apk；同时兜底 app-release-unsigned.apk）
+          # 1) 拷贝 Release APK
           FOUND_APK=""
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             FOUND_APK=app/build/outputs/apk/release/app-release.apk
@@ -424,28 +429,18 @@ jobs:
             FOUND_APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
           fi
           if [ -n "$FOUND_APK" ]; then
-            cp -v "$FOUND_APK" release_out/
+            cp -v "$FOUND_APK" release_out/app-release.apk
           else
             echo "ERROR: 没有找到任何 release APK"
-            ls -la app/build/outputs/apk/ 2>/dev/null || true
-            ls -la app/build/outputs/ 2>/dev/null || true
             exit 1
           fi
-          # 打印 APK 签名摘要（验证是否真的签上了 v2/v3）
-          if command -v apksigner >/dev/null 2>&1; then
-            echo "=== apksigner 验证 APK 签名 ==="
-            apksigner verify --verbose release_out/$(basename "$FOUND_APK") | \
-              grep -E "Verified using|Verified|ERROR" || true
-          elif command -v keytool >/dev/null 2>&1; then
-            echo "=== keytool -printcert（JAR/APK v1 证书） ==="
-            unzip -p release_out/$(basename "$FOUND_APK") META-INF/*.RSA 2>/dev/null | \
-              keytool -printcert 2>&1 | grep -E "Owner|指纹|Certificate fingerprints|SHA256" || true
+          # 2) 拷贝 Debug APK（供用户对比测试）
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp -v app/build/outputs/apk/debug/app-debug.apk release_out/app-debug.apk
           fi
-          # 2) 拷贝 mapping.txt（R8 minifyEnabled=true 时才输出）
+          # 3) 拷贝 mapping.txt
           if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
             cp -v app/build/outputs/mapping/release/mapping.txt release_out/mapping.txt
-          else
-            echo "[warn] mapping.txt 不存在（R8 可能未运行或未输出）"
           fi
           ls -lah release_out/
 
@@ -475,15 +470,15 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           cd release_out
-          APK_FILE=$(ls *.apk | head -n 1)
-          if [ -z "$APK_FILE" ]; then
-              echo "没有找到 APK，跳过签名"
-              exit 1
-          fi
-          echo "对 APK 签名: $APK_FILE"
-          cosign sign-blob --yes "$APK_FILE" \
-            --output-signature "${APK_FILE}.sig" \
-            --output-certificate "${APK_FILE}.pem"
+          # 对所有 APK 文件签名
+          for APK_FILE in *.apk; do
+            if [ -f "$APK_FILE" ]; then
+              echo "对 APK 签名: $APK_FILE"
+              cosign sign-blob --yes "$APK_FILE" \
+                --output-signature "${APK_FILE}.sig" \
+                --output-certificate "${APK_FILE}.pem"
+            fi
+          done
 
           echo "对 SHA256SUMS.txt 签名"
           cosign sign-blob --yes SHA256SUMS.txt \
