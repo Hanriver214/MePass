@@ -18,8 +18,8 @@ android {
         //   原因是 apt 包名错误，build-tools 工具不在 android-sdk-platform-tools 中。
         //   改为从 GitHub Actions 预装的 SDK ($ANDROID_HOME/build-tools/*/) 定位工具。
         //   升级 versionCode=7 / 1.0.6。
-        versionCode = 10
-        versionName = "1.0.9"
+        versionCode = 11
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -65,15 +65,12 @@ android {
 
     buildTypes {
         release {
-            // ============ 关键配置 ============
-            // 不使用 AGP signingConfig，改为构建未签名 APK (app-release-unsigned.apk)
-            // CI 中手动执行：zipalign → apksigner sign
-            // 这是因为 AGP 的签名流程在 zipalign 之后执行，
-            // 但 apksigner 重签名时会剥离 zipalign 的 extra field，
-            // 导致最终 APK 未对齐。正确顺序是：unsigned → zipalign → sign
+            // 恢复 AGP signingConfig，让 AGP 完整执行 v1+v2+v3 签名
+            // 之前禁用 AGP 签名改用 CI 手动签名，导致 v1 签名缺失
+            // 某些定制 ROM 要求 v1 签名才能安装
             isMinifyEnabled = true
             isShrinkResources = false
-            signingConfig = null  // 不在 Gradle 中签名
+            signingConfig = signingConfigs.getByName("release")
             
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
