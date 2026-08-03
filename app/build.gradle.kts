@@ -18,8 +18,8 @@ android {
         //   原因是 apt 包名错误，build-tools 工具不在 android-sdk-platform-tools 中。
         //   改为从 GitHub Actions 预装的 SDK ($ANDROID_HOME/build-tools/*/) 定位工具。
         //   升级 versionCode=7 / 1.0.6。
-        versionCode = 11
-        versionName = "1.1.0"
+        versionCode = 12
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -115,7 +115,12 @@ android {
                 "**/*.a",
                 "**/README.md",
                 "**/DebugProbesKt.bin",
-                "**/kotlin-tooling-metadata.json"
+                "**/kotlin-tooling-metadata.json",
+                "**/META-INF/*.version",
+                "**/META-INF/androidx.**",
+                "**/META-INF/com/android/**",
+                "**/META-INF/version-control-info.textproto",
+                "assets/dexopt/**"
             )
             // 排除 JAR 中附带的顶层资源目录（这些在 APK 中属于非标准顶层条目，
             // 定制 ROM 的 PackageInstaller 在遍历 APK 时会 crash）：
