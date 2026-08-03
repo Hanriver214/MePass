@@ -18,8 +18,8 @@ android {
         //   原因是 apt 包名错误，build-tools 工具不在 android-sdk-platform-tools 中。
         //   改为从 GitHub Actions 预装的 SDK ($ANDROID_HOME/build-tools/*/) 定位工具。
         //   升级 versionCode=7 / 1.0.6。
-        versionCode = 13
-        versionName = "1.1.2"
+        versionCode = 14
+        versionName = "1.1.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -131,6 +131,13 @@ android {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
     packaging {
+        // 【关键】useLegacyPackaging=true → android:extractNativeLibs="true"
+        // 某些定制 ROM 的 PackageInstaller 在 extractNativeLibs="false"（AGP 8.x 默认值）
+        // 时会尝试直接 mmap APK 内的 STORED 条目，若 ZIP 对齐 extra field 缺失就崩溃。
+        // 设为 true 让安装器走传统解压路径，最大化兼容性。
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             // 排除 argon2-jvm 和 JNA 打进 APK 的桌面端 native 库

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- =============================================================
          MePass 安全加固 Manifest 配置
@@ -33,6 +34,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 移除 profileinstaller 自动合并的组件（baseline profile 已禁用）：
+             ProfileInstallReceiver 声明了 exported=true + permission=android.permission.DUMP，
+             某些定制 ROM 会因为 exported 组件持有系统权限而拒绝安装。 -->
+        <receiver android:name="androidx.profileinstaller.ProfileInstallReceiver" tools:node="remove" />
 
     </application>
 
