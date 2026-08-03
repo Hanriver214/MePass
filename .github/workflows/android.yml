@@ -170,10 +170,12 @@ jobs:
           fi
           echo "[step 1 OK] OIDC token length=${#OIDC_TOKEN}"
 
-          # 2) 派生确定性 keystore 密码 (32 bytes hex)
+          # 2) 派生确定性 keystore 密码 (32 bytes hex，仅字母数字；避免 JKS/PKCS12
+          #    各工具对特殊字符处理不一致导致 "keystore password was incorrect")
           #    H = SHA256( "mepass-keystore-pw-v1" | "|" | OIDC_TOKEN | "|" | github_ref )
           SEED_MATERIAL="mepass-keystore-pw-v1|${OIDC_TOKEN}|${GITHUB_REF}|${GITHUB_REPOSITORY}"
           KEYSTORE_PW=$(printf "%s" "$SEED_MATERIAL" | sha256sum | awk '{print $1}')
+          # JKS 规范要求 store-level 密码 = key-level 密码，所有地方统一用同一个。
           KEY_PW="$KEYSTORE_PW"
           KEY_ALIAS="mepass_release"
 
@@ -217,8 +219,16 @@ jobs:
             -inkey "$TMP_PEM" \
             -name "$KEY_ALIAS" \
             -out "$TMP_P12" \
-            -passout "pass:$KEY_PW"
+            -passin  "pass:$KEY_PW" \
+            -passout "pass:$KEY_PW" \
+            -certpbe PBE-SHA1-3DES \
+            -keypbe  PBE-SHA1-3DES \
+            -macalg   SHA1
           echo "[step 5 OK] PKCS12 keystore 生成成功 (size=$(stat -c%s $TMP_P12))"
+          # 立即验证 PKCS12 密码真的对得上（否则下一步 keytool import 会报
+          # "keystore password was incorrect" 而我们无法从报错区分 store vs key 密码错）
+          openssl pkcs12 -in "$TMP_P12" -nokeys -passin "pass:$KEY_PW" -noout
+          echo "[step 5 verify OK] PKCS12 storepass/keypass 自检通过"
 
           # 6) 把 PKCS12 转为 JKS（Android Gradle signingConfigs 对 JKS 兼容性最好）
           WORKDIR=$(pwd)
@@ -226,13 +236,35 @@ jobs:
           if command -v keytool >/dev/null 2>&1; then
             # keytool 来自 setup-java 的 JDK。
             rm -f "$KEYSTORE_PATH"
-            # 把 p12 导入到一个新建的 jks 中
+            # 为避免 "srcstorepass was incorrect"：
+            # 1) 所有 pass 通过临时文件喂给 keytool（keytool -storepass:file 对 shell / bash
+            #    特殊字符比命令行更稳健，命令行里的 $ 等会被 shell 吃掉）；
+            # 2) 将 p12 改复制到路径无特殊字符（/tmp/mepass_src.p12）避免因路径中
+            #    含有空格/引号等导致的解析错。
+            cp -f "$TMP_P12" /tmp/mepass_src.p12
+            PWTMP_SRC=$(mktemp)
+            PWTMP_DST=$(mktemp)
+            printf "%s" "$KEYSTORE_PW" > "$PWTMP_SRC"
+            cp -f "$PWTMP_SRC" "$PWTMP_DST"
             keytool -importkeystore \
-              -srckeystore "$TMP_P12"  -srcstoretype PKCS12 -srcstorepass "$KEYSTORE_PW" \
-              -destkeystore "$KEYSTORE_PATH" -deststoretype JKS   -deststorepass "$KEYSTORE_PW" \
+              -srckeystore /tmp/mepass_src.p12 -srcstoretype PKCS12 \
+              -srcstorepass:file "$PWTMP_SRC" \
+              -destkeystore "$KEYSTORE_PATH" -deststoretype JKS \
+              -deststorepass:file "$PWTMP_DST" \
               -srcalias "$KEY_ALIAS" -destalias "$KEY_ALIAS" \
-              -srckeypass  "$KEY_PW" -destkeypass  "$KEY_PW" \
-              -noprompt 2>&1 | tail -5
+              -srckeypass:file  "$PWTMP_SRC" \
+              -destkeypass:file "$PWTMP_DST" \
+              -noprompt > /tmp/kt_import.log 2>&1 || {
+                echo "ERROR: keytool -importkeystore 失败，日志（完整）："
+                cat /tmp/kt_import.log
+                # 补充：验证 p12 自己能不能用这个密码打开
+                echo "=== 用 openssl pkcs12 反向验证 /tmp/mepass_src.p12 ==="
+                openssl pkcs12 -in /tmp/mepass_src.p12 -nokeys -noout \
+                  -passin "pass:$(cat $PWTMP_SRC)" 2>&1 | head -5 || true
+                rm -f "$PWTMP_SRC" "$PWTMP_DST" /tmp/mepass_src.p12
+                exit 1
+              }
+            rm -f "$PWTMP_SRC" "$PWTMP_DST" /tmp/mepass_src.p12 /tmp/kt_import.log
             echo "[step 6 OK] JKS keystore 转换成功 (size=$(stat -c%s $KEYSTORE_PATH))"
           else
             # 如果 keytool 不可用（极端情况），PKCS12 仍然可以被 AGP 读取（新版 AGP 兼容）
@@ -242,9 +274,14 @@ jobs:
 
           # 7) 输出 keystore 指纹（供用户比对，确定性 → 同一 tag 应总一样）
           if command -v keytool >/dev/null 2>&1; then
-            echo "=== APK 签名证书指纹 ==="
-            keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PW" -alias "$KEY_ALIAS" | \
-              grep -E "指纹|Certificate fingerprints|SHA1|SHA256|MD5|Owner|有效期" || true
+            echo "=== APK 签名证书指纹 (keystore 自检) ==="
+            # 用临时密码文件读取，避免命令行密码泄露与 shell 特殊字符
+            PWTMP_CK=$(mktemp)
+            printf "%s" "$KEYSTORE_PW" > "$PWTMP_CK"
+            keytool -list -v -keystore "$KEYSTORE_PATH" \
+              -storepass:file "$PWTMP_CK" -alias "$KEY_ALIAS" 2>&1 | \
+              grep -E "指纹|Certificate fingerprints|SHA1|SHA256|MD5|Owner|有效期|Alias name" || true
+            rm -f "$PWTMP_CK"
           fi
 
           # 8) 通过 GITHUB_OUTPUT / GITHUB_ENV 暴露给下一个 Gradle 步骤
