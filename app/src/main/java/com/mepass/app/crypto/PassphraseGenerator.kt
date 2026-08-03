@@ -53,16 +53,16 @@ object PassphraseGenerator {
         }
 
         // 4. 从各类中随机挑选字符
-        val result = StringBuilder(length)
+        val chars = CharArray(length)
+        var pos = 0
         for (i in 0 until 4) {
             val cls = classes[i]
             repeat(charCount[i]) {
-                result.append(cls[random.nextInt(cls.length)])
+                chars[pos++] = cls[random.nextInt(cls.length)]
             }
         }
 
         // 5. Fisher-Yates 洗牌
-        val chars = result.toCharArray()
         for (i in chars.indices.reversed()) {
             val j = random.nextInt(i + 1)
             val tmp = chars[i]
