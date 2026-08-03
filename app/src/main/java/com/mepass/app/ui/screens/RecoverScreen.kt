@@ -18,9 +18,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.mepass.app.model.RecoveryResult
 import com.mepass.app.model.Template
@@ -288,9 +285,7 @@ private fun AnswerInputCard(
                 onValueChange = onAnswerChange,
                 label = { Text("答案") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                singleLine = true
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),

@@ -1,20 +1,29 @@
 package com.mepass.app.ui.screens
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.mepass.app.model.Template
+import com.mepass.app.template.TemplateManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -28,6 +37,45 @@ fun HomeScreen(
     onRecover: () -> Unit,
     onRemoveTemplate: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingTemplate by remember { mutableStateOf<Template?>(null) }
+
+    // SAF 文件创建（导出）
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val template = pendingTemplate
+        if (uri != null && template != null) {
+            scope.launch {
+                runCatching {
+                    val json = withContext(Dispatchers.Default) {
+                        TemplateManager.exportTemplate(template)
+                    }
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(json.toByteArray(Charsets.UTF_8))
+                        }
+                    }
+                }.onSuccess {
+                    Toast.makeText(context, "模板已导出", Toast.LENGTH_SHORT).show()
+                }.onFailure { e ->
+                    Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+                pendingTemplate = null
+            }
+        } else {
+            pendingTemplate = null
+        }
+    }
+
+    /** 触发导出：弹出系统文件保存对话框 */
+    val exportTemplate: (Template) -> Unit = { template ->
+        pendingTemplate = template
+        val safeName = template.name.replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
+        exportLauncher.launch("MePass_$safeName.json")
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -102,16 +150,29 @@ fun HomeScreen(
                         Text("版本: v${activeTemplate.version}")
 
                         Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = onRemoveTemplate,
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            )
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("移除当前模板")
+                            OutlinedButton(
+                                onClick = { exportTemplate(activeTemplate) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.IosShare, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("导出")
+                            }
+                            Button(
+                                onClick = onRemoveTemplate,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("移除")
+                            }
                         }
                     }
                 }

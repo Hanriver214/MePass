@@ -12,8 +12,8 @@ android {
         applicationId = "com.mepass.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 20
-        versionName = "2.0.0"
+        versionCode = 21
+        versionName = "2.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }

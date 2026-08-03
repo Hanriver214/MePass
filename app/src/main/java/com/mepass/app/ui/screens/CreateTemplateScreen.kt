@@ -1,6 +1,8 @@
 package com.mepass.app.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.mepass.app.template.TemplateManager
 import com.mepass.app.model.PresetQuestions
@@ -42,6 +43,41 @@ fun CreateTemplateScreen(
     var isGenerating by remember { mutableStateOf(false) }
     var showPresetPicker by remember { mutableStateOf(false) }
     var showCustomDialog by remember { mutableStateOf(false) }
+    var pendingExport by remember { mutableStateOf<Template?>(null) }
+
+    // 生成后立即导出：SAF 文件保存对话框
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val template = pendingExport
+        if (uri != null && template != null) {
+            scope.launch {
+                runCatching {
+                    val json = withContext(Dispatchers.Default) {
+                        TemplateManager.exportTemplate(template)
+                    }
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(json.toByteArray(Charsets.UTF_8))
+                        }
+                    }
+                }.onSuccess {
+                    Toast.makeText(context, "模板已导出", Toast.LENGTH_SHORT).show()
+                }.onFailure { e ->
+                    Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+                pendingExport = null
+                onTemplateCreated(template)
+            }
+        } else {
+            // 用户取消导出，仍然设为当前模板
+            pendingExport?.let {
+                pendingExport = null
+                onTemplateCreated(it)
+            }
+        }
+    }
+
 
     Scaffold(
         topBar = {
@@ -73,7 +109,10 @@ fun CreateTemplateScreen(
                                             threshold = threshold.toInt().coerceAtLeast(1)
                                         )
                                     }
-                                    onTemplateCreated(template)
+                                    // 生成成功后立即弹出导出对话框
+                                    pendingExport = template
+                                    val safeName = template.name.replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
+                                    exportLauncher.launch("MePass_$safeName.json")
                                 } catch (e: Exception) {
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(context, "生成失败: ${e.message}", Toast.LENGTH_LONG).show()
@@ -261,8 +300,7 @@ private fun QuestionCard(
                 onValueChange = onAnswerChange,
                 label = { Text("答案") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation()
+                singleLine = true
             )
         }
     }
