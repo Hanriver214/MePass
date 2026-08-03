@@ -13,10 +13,16 @@ android {
         minSdk = 24
         // targetSdk 34：Android 14 当前主流，不要贸然升到 35
         targetSdk = 34
-        // 修复 v1.0.2 Release 构建失败（BouncyCastle 引用 javax.naming.* 在 Android 不存在导致 R8 报错）。
-        // 版本号：v1.0.2 tag 已存在但 release 构建失败无 APK 产物，故升级到 v1.0.3 / versionCode=4。
-        versionCode = 4
-        versionName = "1.0.3"
+        // 修复 v1.0.3 安装依然闪退：APK 顶层存在 org/ 目录
+        //   (org/bouncycastle/pqc/crypto/picnic/lowmc*.bin.properties +
+        //    org/bouncycastle/x509/CertPathReviewerMessages*.properties)，
+        // 这些是 bcprov-jdk15to18 的顶层 JAR 资源，但在 APK 中属于非标准顶层条目，
+        // 定制 ROM PackageInstaller 遍历时 crash（无提示闪退）。
+        // 在 packaging.resources.excludes 中排除后，顶层仅保留 7 大标准条目
+        // (AndroidManifest/classes*.dex/resources.arsc/res/assets/lib/META-INF) + kotlin/。
+        // 版本号：升级到 versionCode=5 / 1.0.4。
+        versionCode = 5
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -109,6 +115,18 @@ android {
                 "**/README.md",
                 "**/DebugProbesKt.bin",
                 "**/kotlin-tooling-metadata.json"
+            )
+            // 排除 JAR 中附带的顶层资源目录（这些在 APK 中属于非标准顶层条目，
+            // 定制 ROM 的 PackageInstaller 在遍历 APK 时会 crash）：
+            // - org/ : BouncyCastle (bcprov-jdk15to18) 将 picnic/lowmc*.bin.properties
+            //          及 x509/CertPathReviewerMessages*.properties 作为顶层 JAR 资源
+            //          打进 APK，形成 org/bouncycastle/**。在 MePass 中 Argon2Manager
+            //          只用 Argon2BytesGenerator（纯算法），这些 .properties 没用。
+            // - javax/: 未来其他 JAR 依赖若带 javax.* 顶层，统一排除，避免将来再踩坑。
+            excludes += listOf(
+                "org/bouncycastle/pqc/**",
+                "org/bouncycastle/x509/**",
+                "javax/**"
             )
         }
     }
