@@ -20,9 +20,47 @@ android {
         }
     }
 
+    // ---- Release 签名配置（解决安装时报 "解析软件包时出现问题 (33) / packageInfo is null"：
+    //      Android 9+ 要求 APK 必须至少经过 v2 签名，否则 PackageInstaller 会把它当作
+    //      "unsigned" 直接拒绝，错误码 33）。
+    //      密钥来源：不从仓库里放 keystore，改为通过环境变量从 GitHub Actions 运行时注入，
+    //      避免泄露；本地开发时环境变量不存在，会自动降级为 debug keystore 以保证可调试。
+    signingConfigs {
+        create("release") {
+            val storeFilePath = System.getenv("MEPASS_RELEASE_STORE_FILE")
+            val storePw = System.getenv("MEPASS_RELEASE_STORE_PASSWORD")
+            val keyAliasV = System.getenv("MEPASS_RELEASE_KEY_ALIAS") ?: "mepass_release"
+            val keyPw = System.getenv("MEPASS_RELEASE_KEY_PASSWORD")
+
+            if (!storeFilePath.isNullOrBlank() && !storePw.isNullOrBlank()) {
+                println("[signing] 加载 release signingConfig: $storeFilePath (alias=$keyAliasV)")
+                storeFile = file(storeFilePath)
+                storePassword = storePw
+                keyAlias = keyAliasV
+                keyPassword = keyPw ?: storePw
+                // 开启 v2/v3 签名（APK必须有才能安装）
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV1Signing = true
+            } else {
+                println("[signing] ⚠ 未检测到 release 签名环境变量缺失，release 构建将使用 debug 签名作为兜底")
+                // 本地无环境开发者或未配置时使用 debug keystore
+                storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV1Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = false  // Compose 应用缩代码即可，先不开资源压缩防问题
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

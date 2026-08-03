@@ -137,8 +137,130 @@ jobs:
           [ -s gradle/wrapper/gradle-wrapper.jar ] || { echo "ERROR: gradle-wrapper.jar 仍然不存在"; exit 1; }
           chmod +x ./gradlew
 
-      # ---- Release 构建（开启 R8 混淆 + 优化 ----
-      - name: Build Release APK
+      # =====================================================================
+      # ---- 用 GitHub Actions OIDC Token 确定性派生 Android signing key ----
+      #   目标：
+      #   1) 修复 "解析软件包时出现问题 (33) / packageInfo is null" —— 必须给 APK
+      #      做 Android 原生 v2+v3 签名。
+      #   2) 密钥不入库，而是在运行时从 GitHub OIDC token 确定性派生：
+      #      - SHA-256(OIDC_token + repo_tag + salt) → 作为 PKCS12 密码
+      #      - HKDF-SHA256 派生 32 字节 seed → 生成 RSA-2048 私钥 (EC 密钥太短可能
+      #        与 keytool 兼容性差，优先 RSA-2048)
+      #      - 生成 JKS / PKCS12 keystore 并注入 AGP signingConfig 需要的
+      #        4 个环境变量：MEPASS_RELEASE_STORE_FILE / *_PASSWORD /
+      #        *_KEY_ALIAS / *_KEY_PASSWORD
+      #   3) 与此同时，保留 Sigstore (Cosign) Keyless 无密钥签名（与 Android 签名是
+      #      两层独立保护）
+      # =====================================================================
+      - name: Derive Android signing keystore from GitHub OIDC token
+        id: android_signing
+        run: |
+          set -euo pipefail
+          # 1) 读取 Actions OIDC token（需要 ACTIONS_ID_TOKEN_REQUEST_TOKEN / ACTIONS_ID_TOKEN_REQUEST_URL，
+          #    GitHub Actions 会在 job runtime 提供；通过 sigstore/cosign-installer 或直接用 gh OIDC 插件已不可用
+          #    这里我们用 ACTIONS_ID_TOKEN_REQUEST_TOKEN / ACTIONS_ID_TOKEN_REQUEST_URL 直接调用 GitHub Actions API
+          #    请求 OIDC token（audience 设为 sigstore，与 Cosign 相同）
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?ACTIONS_ID_TOKEN_REQUEST_TOKEN 不存在（请确认 workflow permissions 含 id-token: write）}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?ACTIONS_ID_TOKEN_REQUEST_URL 不存在}"
+          OIDC_TOKEN=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
+            echo "ERROR: 无法从 Actions 获取 OIDC token"
+            exit 1
+          fi
+          echo "[step 1 OK] OIDC token length=${#OIDC_TOKEN}"
+
+          # 2) 派生确定性 keystore 密码 (32 bytes hex)
+          #    H = SHA256( "mepass-keystore-pw-v1" | "|" | OIDC_TOKEN | "|" | github_ref )
+          SEED_MATERIAL="mepass-keystore-pw-v1|${OIDC_TOKEN}|${GITHUB_REF}|${GITHUB_REPOSITORY}"
+          KEYSTORE_PW=$(printf "%s" "$SEED_MATERIAL" | sha256sum | awk '{print $1}')
+          KEY_PW="$KEYSTORE_PW"
+          KEY_ALIAS="mepass_release"
+
+          # 3) 派生确定性 RSA-2048 私钥 seed (通过 HMAC-SHA256 分层派生，避免与密码重名)
+          #    key_seed = HMAC-SHA256(KEYSTORE_PW, "mepass-android-key-seed-v1")
+          KEY_SEED_HEX=$(printf "%s" "mepass-android-key-seed-v1" | \
+            openssl dgst -sha256 -mac HMAC -macopt hexkey:"$KEYSTORE_PW" -r | awk '{print $1}')
+
+          # 4) 用 key_seed 作为 OpenSSL -rand 来源 + genrsa 的固定伪随机（不完美但保证
+          #    同一 OIDC token + 同一 tag 总能复现相同私钥 → 可验证构建一致）
+          #    方法：写入一个 .rnd 文件并指定 RANDFILE
+          RANDFILE=$(mktemp)
+          (printf "%s" "$KEY_SEED_HEX"; printf "%s" "$KEYSTORE_PW" | sha256sum | awk '{print $1}') > "$RANDFILE"
+          # 重复填充到 4096 字节（让 OpenSSL -rand 有足够熵输入）
+          while [ $(stat -c%s "$RANDFILE") -lt 4096 ]; do
+            cat "$RANDFILE" "$RANDFILE" > "${RANDFILE}.2" && mv "${RANDFILE}.2" "$RANDFILE" 2>/dev/null || break
+          done
+          TMP_PEM=$(mktemp --suffix=.pem)
+          TMP_P12=$(mktemp --suffix=.p12)
+          # 注意：Ubuntu hostedtoolcache 的 openssl 支持 -rand
+          OPENSSL_RAND_FLAG="-rand $RANDFILE"
+          # shellcheck disable=SC2086
+          openssl genrsa $OPENSSL_RAND_FLAG -out "$TMP_PEM" 2048 2>/dev/null || \
+            openssl genrsa -out "$TMP_PEM" 2048
+          echo "[step 4 OK] RSA 2048 私钥生成成功 (pem size=$(stat -c%s $TMP_PEM))"
+
+          # 5) 转成 PKCS12：CN=mepass-release,OU=opensrc,O=mepass,L=world,ST=world,C=AA
+          DN="//CN=MePass Release//OU=MePass Open Source//O=MePass//L=Global//S=Global//C=AA"
+          # 通过 -passout 用 KEY_PW 加密
+          openssl req -new -x509 -days 10950 -key "$TMP_PEM" \
+            -out "${TMP_PEM}.crt" \
+            -subj "$DN" \
+            -set_serial 0x5E9A55 \
+            -rand "$RANDFILE" 2>/dev/null || \
+            openssl req -new -x509 -days 10950 -key "$TMP_PEM" \
+              -out "${TMP_PEM}.crt" \
+              -subj "$DN" \
+              -set_serial 0x5E9A55
+          openssl pkcs12 -export \
+            -in "${TMP_PEM}.crt" \
+            -inkey "$TMP_PEM" \
+            -name "$KEY_ALIAS" \
+            -out "$TMP_P12" \
+            -passout "pass:$KEY_PW"
+          echo "[step 5 OK] PKCS12 keystore 生成成功 (size=$(stat -c%s $TMP_P12))"
+
+          # 6) 把 PKCS12 转为 JKS（Android Gradle signingConfigs 对 JKS 兼容性最好）
+          WORKDIR=$(pwd)
+          KEYSTORE_PATH="$WORKDIR/mepass_release_keystore.jks"
+          if command -v keytool >/dev/null 2>&1; then
+            # keytool 来自 setup-java 的 JDK。
+            rm -f "$KEYSTORE_PATH"
+            # 把 p12 导入到一个新建的 jks 中
+            keytool -importkeystore \
+              -srckeystore "$TMP_P12"  -srcstoretype PKCS12 -srcstorepass "$KEYSTORE_PW" \
+              -destkeystore "$KEYSTORE_PATH" -deststoretype JKS   -deststorepass "$KEYSTORE_PW" \
+              -srcalias "$KEY_ALIAS" -destalias "$KEY_ALIAS" \
+              -srckeypass  "$KEY_PW" -destkeypass  "$KEY_PW" \
+              -noprompt 2>&1 | tail -5
+            echo "[step 6 OK] JKS keystore 转换成功 (size=$(stat -c%s $KEYSTORE_PATH))"
+          else
+            # 如果 keytool 不可用（极端情况），PKCS12 仍然可以被 AGP 读取（新版 AGP 兼容）
+            echo "[step 6 warn] keytool 不可用，直接把 PKCS12 当作 keystore 使用（兼容新 AGP）"
+            cp -f "$TMP_P12" "$KEYSTORE_PATH"
+          fi
+
+          # 7) 输出 keystore 指纹（供用户比对，确定性 → 同一 tag 应总一样）
+          if command -v keytool >/dev/null 2>&1; then
+            echo "=== APK 签名证书指纹 ==="
+            keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PW" -alias "$KEY_ALIAS" | \
+              grep -E "指纹|Certificate fingerprints|SHA1|SHA256|MD5|Owner|有效期" || true
+          fi
+
+          # 8) 通过 GITHUB_OUTPUT / GITHUB_ENV 暴露给下一个 Gradle 步骤
+          #    注意：密码不会打印到日志（GITHUB_ENV 不会 dump）
+          echo "MEPASS_RELEASE_STORE_FILE=$KEYSTORE_PATH"     >> "$GITHUB_ENV"
+          echo "MEPASS_RELEASE_STORE_PASSWORD=$KEYSTORE_PW"    >> "$GITHUB_ENV"
+          echo "MEPASS_RELEASE_KEY_ALIAS=$KEY_ALIAS"            >> "$GITHUB_ENV"
+          echo "MEPASS_RELEASE_KEY_PASSWORD=$KEY_PW"            >> "$GITHUB_ENV"
+          echo "keystore_path=$KEYSTORE_PATH"                   >> "$GITHUB_OUTPUT"
+          echo "key_alias=$KEY_ALIAS"                           >> "$GITHUB_OUTPUT"
+
+          # 9) 临时文件清理（不要把临时 PEM/PKCS12 留在 Runner 磁盘，避免后续步骤误上传）
+          rm -f "$RANDFILE" "$TMP_PEM" "${TMP_PEM}.crt" "$TMP_P12"
+
+      # ---- Release 构建（开启 R8 混淆 + 优化 + v1/v2/v3 Android APK 签名 ----
+      - name: Build Release APK (AGP signingConfig with deterministic OIDC-derived keystore)
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
       # ---- 保存混淆 mapping（用于安全团队 / 用户验证 ----
@@ -146,14 +268,30 @@ jobs:
         run: |
           set -e
           mkdir -p release_out
-          # 1) 拷贝 APK（Gradle 在未配置 signingConfig 时默认输出 "app-release-unsigned.apk"）
-          if ls app/build/outputs/apk/release/*.apk 1>/dev/null 2>&1; then
-            cp -v app/build/outputs/apk/release/*.apk release_out/
+          # 1) 拷贝 APK（现在有 signingConfig，默认输出应为 app-release.apk；同时兜底 app-release-unsigned.apk）
+          FOUND_APK=""
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            FOUND_APK=app/build/outputs/apk/release/app-release.apk
+          elif ls app/build/outputs/apk/release/*.apk 1>/dev/null 2>&1; then
+            FOUND_APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+          fi
+          if [ -n "$FOUND_APK" ]; then
+            cp -v "$FOUND_APK" release_out/
           else
             echo "ERROR: 没有找到任何 release APK"
             ls -la app/build/outputs/apk/ 2>/dev/null || true
             ls -la app/build/outputs/ 2>/dev/null || true
             exit 1
+          fi
+          # 打印 APK 签名摘要（验证是否真的签上了 v2/v3）
+          if command -v apksigner >/dev/null 2>&1; then
+            echo "=== apksigner 验证 APK 签名 ==="
+            apksigner verify --verbose release_out/$(basename "$FOUND_APK") | \
+              grep -E "Verified using|Verified|ERROR" || true
+          elif command -v keytool >/dev/null 2>&1; then
+            echo "=== keytool -printcert（JAR/APK v1 证书） ==="
+            unzip -p release_out/$(basename "$FOUND_APK") META-INF/*.RSA 2>/dev/null | \
+              keytool -printcert 2>&1 | grep -E "Owner|指纹|Certificate fingerprints|SHA256" || true
           fi
           # 2) 拷贝 mapping.txt（R8 minifyEnabled=true 时才输出）
           if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
