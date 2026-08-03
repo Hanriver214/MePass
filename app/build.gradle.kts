@@ -18,8 +18,8 @@ android {
         //   原因是 apt 包名错误，build-tools 工具不在 android-sdk-platform-tools 中。
         //   改为从 GitHub Actions 预装的 SDK ($ANDROID_HOME/build-tools/*/) 定位工具。
         //   升级 versionCode=7 / 1.0.6。
-        versionCode = 12
-        versionName = "1.1.1"
+        versionCode = 13
+        versionName = "1.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -45,10 +45,13 @@ android {
                 storePassword = storePw
                 keyAlias = keyAliasV
                 keyPassword = keyPw ?: storePw
-                // 开启 v2/v3 签名（APK必须有才能安装）
+                // 开启 v1/v2/v3 签名（APK必须有才能安装，定制 ROM 尤其需要 v1）
+                enableV1Signing = true
                 enableV2Signing = true
                 enableV3Signing = true
-                enableV1Signing = true
+                // 【关键】禁用 v4 签名：v4 会生成 VerityPaddingBlock (ID 0x42726577 "Brew")，
+                // 该非标准块会导致定制 ROM PackageInstaller 解析 APK Signing Block 时崩溃
+                enableV4Signing = false
             } else {
                 println("[signing] ⚠ 未检测到 release 签名环境变量缺失，release 构建将使用 debug 签名作为兜底")
                 // 本地无环境开发者或未配置时使用 debug keystore
@@ -56,9 +59,10 @@ android {
                 storePassword = "android"
                 keyAlias = "androiddebugkey"
                 keyPassword = "android"
+                enableV1Signing = true
                 enableV2Signing = true
                 enableV3Signing = true
-                enableV1Signing = true
+                enableV4Signing = false
             }
         }
     }
@@ -71,7 +75,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
-            
+
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -79,7 +83,18 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // 【关键修复】给 debug 也显式配置签名，并强制启用 v1 签名
+            // 之前 debug 没有显式 signingConfig，AGP 8.5.2 在 minSdk>=24 时
+            // 默认跳过 v1 签名，导致定制 ROM（只支持 v1）无法安装 debug APK
+            signingConfig = signingConfigs.getByName("release")
         }
+    }
+    // 【关键】移除 DependencyInfoBlock (ID 0x504b4453 "PKDS")
+    // 该块由 AGP 自动添加，包含 Google 加密的依赖信息，非 Google ROM 无法解析。
+    // 定制 ROM 的 PackageInstaller 遇到此非标准块会崩溃（无提示闪退）。
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -155,6 +170,15 @@ android {
         // 防止 "lint-baseline.xml 不存在" 导致无法生成基线
         abortOnError = true
     }
+}
+
+// 【关键】禁用 AGP 的 art profile (baseline.prof) 生成任务。
+// packaging.resources.excludes 中的 "assets/dexopt/**" 无法拦截 AGP 在
+// PackageApplication 阶段最后注入的 baseline.prof/baseline.profm。
+// 这些文件在部分定制 ROM 上会导致安装器解析 assets/dexopt/ 时崩溃。
+project.afterEvaluate {
+    tasks.matching { it.name.contains("ArtProfile", ignoreCase = true) }
+        .configureEach { enabled = false }
 }
 
 dependencies {
