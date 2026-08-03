@@ -18,8 +18,8 @@ android {
         //   原因是 apt 包名错误，build-tools 工具不在 android-sdk-platform-tools 中。
         //   改为从 GitHub Actions 预装的 SDK ($ANDROID_HOME/build-tools/*/) 定位工具。
         //   升级 versionCode=7 / 1.0.6。
-        versionCode = 14
-        versionName = "1.1.3"
+        versionCode = 15
+        versionName = "1.1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
