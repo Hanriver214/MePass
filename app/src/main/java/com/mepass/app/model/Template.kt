@@ -81,7 +81,8 @@ data class Template(
     val shamirShares: Map<String, ShamirEncryptedShare>
 ) {
     companion object {
-        const val CURRENT_VERSION = 1
+        const val CURRENT_VERSION = 2
+        const val MIN_SUPPORTED_VERSION = 2
     }
 }
 

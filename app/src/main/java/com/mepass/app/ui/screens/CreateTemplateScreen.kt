@@ -27,6 +27,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+import java.util.UUID
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateTemplateScreen(
@@ -254,7 +256,7 @@ fun CreateTemplateScreen(
         CustomQuestionDialog(
             onConfirm = { text ->
                 val newQuestion = Question(
-                    id = "custom_${System.currentTimeMillis()}",
+                    id = "custom_${UUID.randomUUID().toString().replace("-", "")}",
                     text = text,
                     isCustom = true
                 )

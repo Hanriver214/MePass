@@ -14,7 +14,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -37,17 +36,20 @@ fun RecoverScreen(
     val keyboard = LocalSoftwareKeyboardController.current
 
     var answers by remember { mutableStateOf(mapOf<String, String>()) }
-    var verifyResults by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var recoveryResult by remember { mutableStateOf<RecoveryResult?>(null) }
     var isRecovering by remember { mutableStateOf(false) }
     var showPassphrase by remember { mutableStateOf(false) }
 
-    // 注册 wipe 回调（退出屏幕时清空密码）
+    // 注册 wipe 回调（退出屏幕时清空敏感数据）
     DisposableEffect(Unit) {
-        val callback = { recoveryResult = null }
+        val callback = {
+            recoveryResult = null
+            answers = emptyMap()
+        }
         PrivacyGuard.registerWipeCallback(callback)
         onDispose {
             PrivacyGuard.unregisterWipeCallback(callback)
+            answers = emptyMap()
         }
     }
 
@@ -118,30 +120,22 @@ fun RecoverScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
+                        Text(
+                            "提示：请一次性填写所有答案后点击「开始恢复」，系统将统一验证",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
                 }
             }
 
-            // 问题列表
+            // 问题列表（仅输入，无逐题验证按钮）
             items(template.questions) { question ->
                 AnswerInputCard(
                     question = question,
                     answer = answers[question.id] ?: "",
-                    verifyResult = verifyResults[question.id],
                     onAnswerChange = { newAnswer ->
                         answers = answers + (question.id to newAnswer)
-                        verifyResults = verifyResults - question.id
-                    },
-                    onVerify = {
-                        val answerText = answers[question.id] ?: ""
-                        if (answerText.isNotBlank()) {
-                            scope.launch {
-                                val result = withContext(Dispatchers.Default) {
-                                    TemplateManager.verifySingleAnswer(template, question.id, answerText)
-                                }
-                                verifyResults = verifyResults + (question.id to result)
-                            }
-                        }
                     }
                 )
             }
@@ -173,7 +167,6 @@ fun RecoverScreen(
                                         color = MaterialTheme.colorScheme.onTertiaryContainer
                                     )
 
-                                    // 密码显示
                                     val passphrase = result.passphrase
                                     val displayText = if (showPassphrase) passphrase else "•".repeat(passphrase.length)
                                     Text(
@@ -250,19 +243,10 @@ fun RecoverScreen(
 private fun AnswerInputCard(
     question: com.mepass.app.model.Question,
     answer: String,
-    verifyResult: Boolean?,
-    onAnswerChange: (String) -> Unit,
-    onVerify: () -> Unit
+    onAnswerChange: (String) -> Unit
 ) {
-    val containerColor = when (verifyResult) {
-        true -> MaterialTheme.colorScheme.primaryContainer
-        false -> MaterialTheme.colorScheme.errorContainer
-        null -> MaterialTheme.colorScheme.surfaceVariant
-    }
-
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = containerColor)
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -287,26 +271,6 @@ private fun AnswerInputCard(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(
-                    onClick = onVerify,
-                    enabled = answer.isNotBlank()
-                ) {
-                    Text("验证")
-                }
-                verifyResult?.let {
-                                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        if (it) "✓ 正确" else "✗ 错误",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = if (it) Color(0xFF2E7D32) else Color(0xFFC62828)
-                    )
-                }
-            }
         }
     }
 }

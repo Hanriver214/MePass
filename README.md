@@ -33,7 +33,7 @@
 | 模块 | 算法 / 实现 | 说明 |
 |------|-----------|------|
 | 答案派生 | **Argon2id** (m=64MB, t=3, p=2) | OWASP 推荐的抗 GPU/ASIC 攻击 KDF |
-| 秘密共享 | **Shamir's Secret Sharing** (GF(2³¹-1)) | 将主秘密分为 N 份，k 份可还原 |
+| 秘密共享 | **Shamir's Secret Sharing** (GF(2^8)) | 将主秘密分为 N 份，k 份可还原 |
 | 分片加密 | **AES-256-GCM** | 每个 Shamir 分片用对应问题的答案密钥加密 |
 | 模板加密导出 | **Argon2id + AES-256-GCM** | 导出时可选用口令加密整个模板信封，导入时自动识别并解密 |
 | 完整性 | **SHA-256** + 常量时间比较 | 模板防篡改、防时序攻击 |
@@ -68,7 +68,11 @@
        ▼
   答案规范化（统一大小写/空格/日期等）
        │
-       ├─► Argon2id 哈希 ──► 存入模板 verificationHashes（用于验证答案）
+       ├─► Argon2id 派生主密钥
+       │       │
+       │       ├─► HMAC-SHA256("mepass_verification") → verification_key → SHA-256 → 存入 verificationHashes
+       │       │
+       │       └─► HMAC-SHA256("mepass_encryption") → encryption_key → 用于 AES-GCM 加密分片
        │
        ▼
  生成 32 字节真随机主秘密 (CSPRNG)
@@ -77,14 +81,14 @@
  Shamir(k, N) 分割为 N 个分片
        │
        ▼
- 第 i 个分片 = AES-256-GCM(用第 i 个答案 Argon2id 派生的密钥加密)
+ 第 i 个分片 = AES-256-GCM(encryption_key_i)
        │
        ▼
  组装成 Template（JSON 格式）:
    ├─ questions[]          只有问题文本，没有答案
    ├─ thresholdConfig      k/N 门限配置
-   ├─ integrityHash        SHA-256 完整性哈希
-   ├─ verificationHashes   每个问题 ID → Argon2id(答案)
+   ├─ integrityHash        SHA-256 完整性哈希（覆盖所有字段）
+   ├─ verificationHashes   每个问题 ID → SHA-256(verification_key)
    └─ shamirShares         每个问题 ID → AES(Shamir分片)
 ```
 
@@ -97,19 +101,21 @@
  答案规范化
        │
        ▼
- 逐个对比 Argon2id 验证哈希
+ Argon2id + HKDF 双密钥派生
+       │
+       ├─► verification_key → SHA-256 → 对比 verificationHashes
        │
        ▼
  收集正确答案对应的加密分片
        │
        ▼
- 用每个答案派生的密钥 → AES-GCM 解密 → 取得 Shamir 分片
+ encryption_key → AES-GCM 解密 → 取得 Shamir 分片
        │
        ▼
  Lagrange 插值恢复 32 字节主秘密
        │
        ▼
- Argon2id + 2048 BIP39 风格词表 → 生成 12 词 Passphrase
+ HKDF-Expand(HMAC-SHA256) → 生成 14~16 位强密码
 ```
 
 ---
@@ -165,22 +171,25 @@ MePass/
 │       │   │   ├── MainActivity.kt        # Jetpack Compose 入口 + 导航
 │       │   │   ├── crypto/
 │       │   │   │   ├── AnswerNormalizer.kt    # 答案规范化（日期/大小写/空格/全半角）
-│       │   │   │   ├── Argon2Manager.kt       # Argon2id 哈希、密钥派生、2048词 Passphrase
-│       │   │   │   ├── AesManager.kt          # AES-256-GCM 加解密封装
-│       │   │   │   └── ShamirSecretSharing.kt # (k,N) 门限 Shamir 秘密共享
+│       │   │   │   ├── Argon2Kdf.kt           # Argon2id + HKDF 双密钥派生
+│       │   │   │   ├── AesGcm.kt              # AES-256-GCM 加解密（支持 AAD）
+│       │   │   │   ├── PassphraseGenerator.kt # HKDF-Expand 确定性密码生成
+│       │   │   │   ├── EncryptedExport.kt     # 模板加密导出/导入
+│       │   │   │   └── ShamirSss.kt           # (k,N) 门限 Shamir 秘密共享 GF(2^8)
 │       │   │   ├── model/
-│       │   │   │   ├── DataModels.kt          # Question / Template / Threshold / RecoveryResult
+│       │   │   │   ├── Template.kt            # Question / Template / Threshold / RecoveryResult
 │       │   │   │   └── PresetQuestions.kt     # 12 个内置问题列表
+│       │   │   ├── security/
+│       │   │   │   └── PrivacyGuard.kt        # FLAG_SECURE + 敏感数据清理
 │       │   │   ├── template/
-│       │   │   │   ├── IntegrityManager.kt    # SHA-256 完整性校验 + 常量时间比较
-│       │   │   │   └── TemplateManager.kt     # 创建 / 导出 / 导入 / 恢复
+│       │   │   │   └── TemplateManager.kt    # 创建 / 导出 / 导入 / 恢复 + 完整性校验
 │       │   │   └── ui/
 │       │   │       ├── theme/                  # Material3 主题
 │       │   │       └── screens/
 │       │   │           ├── HomeScreen.kt            # 首页 + 模板概览
 │       │   │           ├── CreateTemplateScreen.kt  # 创建模板（选问题+填答案+设门限）
 │       │   │           ├── ImportTemplateScreen.kt  # JSON 导入 + 完整性校验
-│       │   │           └── RecoverScreen.kt         # 单题即时验证 + 恢复 Passphrase
+│       │       │           └── RecoverScreen.kt         # 统一验证 + 恢复密码
 │       │   └── res/
 │       └── test/java/com/mepass/app/           # 单元测试
 ├── .github/workflows/android.yml               # CI/CD

@@ -10,7 +10,7 @@ import org.junit.Test
  */
 class EncryptedExportTest {
 
-    private val sampleJson = """{"version":1,"name":"测试","questions":[],"thresholdConfig":{"totalQuestions":1,"threshold":1},"integrityHash":"abc","verificationHashes":{},"shamirShares":{}}"""
+    private val sampleJson = """{"version":2,"name":"测试","questions":[],"thresholdConfig":{"totalQuestions":1,"threshold":1},"integrityHash":"abc","verificationHashes":{},"shamirShares":{}}"""
 
     @Test
     fun `加密往返还原明文`() {
