@@ -55,7 +55,26 @@ android {
             } else {
                 println("[signing] ⚠ 未检测到 release 签名环境变量缺失，release 构建将使用 debug 签名作为兜底")
                 // 本地无环境开发者或未配置时使用 debug keystore
-                storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                val debugKeystore = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                // CI 环境可能没有 debug.keystore，自动生成一个（用 keytool）
+                if (!debugKeystore.exists()) {
+                    println("[signing] debug.keystore 不存在，自动生成: ${debugKeystore.absolutePath}")
+                    debugKeystore.parentFile.mkdirs()
+                    project.exec {
+                        commandLine(
+                            "keytool", "-genkeypair",
+                            "-alias", "androiddebugkey",
+                            "-keyalg", "RSA", "-keysize", "2048",
+                            "-validity", "10950",
+                            "-dname", "CN=Android Debug,O=Android,C=US",
+                            "-keystore", debugKeystore.absolutePath,
+                            "-storepass", "android",
+                            "-keypass", "android",
+                            "-noprompt"
+                        )
+                    }
+                }
+                storeFile = debugKeystore
                 storePassword = "android"
                 keyAlias = "androiddebugkey"
                 keyPassword = "android"
