@@ -303,8 +303,8 @@ object TemplateManager {
             ShamirSss.combine(correctShares.take(threshold))
         }
 
-        // 派生密码
-        val passphrase = PassphraseGenerator.generate(masterSecret)
+        // 派生密码（根据模板版本选择对应算法，保证密码可重现）
+        val passphrase = PassphraseGenerator.generate(masterSecret, template.version)
 
         // 清零主密钥
         masterSecret.fill(0)
