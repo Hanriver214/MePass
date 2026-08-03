@@ -258,24 +258,17 @@ jobs:
       - name: Build Release APK (AGP signingConfig with deterministic OIDC-derived keystore)
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
-      # ---- 强制 Zipalign + 重新签名（解决 AGP 未正确执行 zipalign 的问题）----
-      # AGP 8.x 在某些情况下可能跳过 zipalign，导致 APK 中文件未对齐，
-      # 定制 ROM 安装器无法解析。这里手动用 zipalign 强制对齐，
-      # 然后用 apksigner 重新签名（zipalign 会修改 APK，破坏原有签名）。
-      - name: Force Zipalign and Resign APK
+      # ---- 强制 Zipalign + 签名（正确顺序：unsigned → zipalign → sign）----
+      # AGP 构建未签名 APK，CI 手动执行 zipalign + apksigner sign
+      # 这是 Google 推荐的流程，确保 zipalign 的 extra field 不被签名过程剥离
+      - name: Zipalign and Sign APK
         run: |
           set -e
           
           # 1) 定位 Android SDK build-tools（GitHub Actions runner 预装）
-          echo "=== 定位 Android SDK build-tools ==="
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          
-          # GitHub Actions ubuntu-latest 预装 SDK 在 /usr/local/lib/android/sdk
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "SDK_ROOT=$SDK_ROOT"
           
-          # 列出已安装的 build-tools 版本
           if [ -d "$SDK_ROOT/build-tools" ]; then
             echo "已安装的 build-tools 版本:"
             ls -1 "$SDK_ROOT/build-tools/" || true
@@ -292,19 +285,13 @@ jobs:
           
           if [ -n "$BT_DIR" ] && [ -d "$BT_DIR" ]; then
             echo "使用 build-tools: $BT_DIR"
-            if [ -f "${BT_DIR}zipalign" ]; then
-              ZIPALIGN="${BT_DIR}zipalign"
-              chmod +x "$ZIPALIGN" 2>/dev/null || true
-            fi
-            if [ -f "${BT_DIR}apksigner" ]; then
-              APKSIGNER="${BT_DIR}apksigner"
-              chmod +x "$APKSIGNER" 2>/dev/null || true
-            fi
+            [ -f "${BT_DIR}zipalign" ] && ZIPALIGN="${BT_DIR}zipalign"
+            [ -f "${BT_DIR}apksigner" ] && APKSIGNER="${BT_DIR}apksigner"
           fi
           
           # 如果预装的没有，尝试用 sdkmanager 安装 build-tools;34.0.0
           if [ -z "$ZIPALIGN" ] || [ -z "$APKSIGNER" ]; then
-            echo "预装 build-tools 中未找到工具，尝试安装 build-tools;34.0.0..."
+            echo "尝试安装 build-tools;34.0.0..."
             yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" 2>/dev/null || true
             if [ -d "$SDK_ROOT/build-tools/34.0.0" ]; then
               BT_DIR="$SDK_ROOT/build-tools/34.0.0/"
@@ -313,128 +300,113 @@ jobs:
             fi
           fi
           
-          # 最后备选：搜索系统 PATH
-          if [ -z "$ZIPALIGN" ] && command -v zipalign >/dev/null 2>&1; then
-            ZIPALIGN=$(which zipalign)
-          fi
-          if [ -z "$APKSIGNER" ] && command -v apksigner >/dev/null 2>&1; then
-            APKSIGNER=$(which apksigner)
-          fi
-          
           echo "zipalign: ${ZIPALIGN:-NOT FOUND}"
           echo "apksigner: ${APKSIGNER:-NOT FOUND}"
           
-          if [ -z "$ZIPALIGN" ] && [ -z "$APKSIGNER" ]; then
-            echo "ERROR: 既找不到 zipalign 也找不到 apksigner"
-            echo "已安装的 build-tools 目录:"
+          if [ -z "$ZIPALIGN" ] || [ -z "$APKSIGNER" ]; then
+            echo "ERROR: 找不到 zipalign 或 apksigner"
             find "$SDK_ROOT/build-tools" -name "zipalign" -o -name "apksigner" 2>/dev/null || true
-            # 不 exit 1，让构建继续（AGP 可能已正确对齐和签名）
-            echo "[WARN] 跳过手动 zipalign 和重签名步骤"
-            exit 0
+            exit 1
           fi
           
-          # 2) 找到构建的 APK
-          FOUND_APK=""
-          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            FOUND_APK=app/build/outputs/apk/release/app-release.apk
+          # 2) 找到未签名的 APK（signingConfig=null 时输出 app-release-unsigned.apk）
+          UNSIGNED_APK=""
+          if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          elif [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            UNSIGNED_APK=app/build/outputs/apk/release/app-release.apk
           elif ls app/build/outputs/apk/release/*.apk 1>/dev/null 2>&1; then
-            FOUND_APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
+            UNSIGNED_APK=$(ls app/build/outputs/apk/release/*.apk | head -n 1)
           fi
           
-          if [ -z "$FOUND_APK" ]; then
+          if [ -z "$UNSIGNED_APK" ]; then
             echo "ERROR: 没有找到 release APK"
             exit 1
           fi
           
-          echo "找到 APK: $FOUND_APK"
-          echo "APK 大小: $(stat -c%s "$FOUND_APK") bytes"
+          echo "未签名 APK: $UNSIGNED_APK"
+          echo "APK 大小: $(stat -c%s "$UNSIGNED_APK") bytes"
           
-          # 3) 强制 zipalign
-          if [ -n "$ZIPALIGN" ] && [ -x "$ZIPALIGN" ]; then
-            echo "=== 执行 zipalign ==="
-            # -f: 强制覆盖输出文件
-            # -p: 对所有文件（包括 STORED）对齐到 4 字节边界
-            # 4: 对齐到 4 字节（标准值，Google Play 要求）
-            cp "$FOUND_APK" "${FOUND_APK}.unaligned"
-            "$ZIPALIGN" -f -p 4 "${FOUND_APK}.unaligned" "$FOUND_APK"
-            echo "zipalign 完成"
-            echo "对齐后大小: $(stat -c%s "$FOUND_APK") bytes"
-            
-            # 验证对齐
-            echo "=== zipalign 验证 ==="
-            "$ZIPALIGN" -c -p 4 "$FOUND_APK" && echo "✓ zipalign 验证通过" || echo "✗ zipalign 验证失败"
-            
-            rm -f "${FOUND_APK}.unaligned"
-          else
-            echo "[WARN] 找不到 zipalign，跳过对齐步骤"
-          fi
+          # 3) zipalign 未签名 APK
+          echo "=== 执行 zipalign ==="
+          ALIGNED_APK="app/build/outputs/apk/release/app-release-aligned.apk"
+          "$ZIPALIGN" -f -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          echo "zipalign 完成"
+          echo "对齐后大小: $(stat -c%s "$ALIGNED_APK") bytes"
           
-          # 4) 重新签名 APK（因为 zipalign 会破坏原有签名）
-          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
-            echo "=== 用 apksigner 重新签名 ==="
-            STORE_FILE="${MEPASS_RELEASE_STORE_FILE}"
+          # 验证对齐
+          echo "=== zipalign 验证 ==="
+          "$ZIPALIGN" -c -p 4 "$ALIGNED_APK" && echo "✓ zipalign 验证通过" || { echo "✗ zipalign 验证失败"; exit 1; }
+          
+          # 4) 用 apksigner 签名（在已对齐的 APK 上签名，保留 extra field）
+          echo "=== 用 apksigner 签名 ==="
+          SIGNED_APK="app/build/outputs/apk/release/app-release.apk"
+          STORE_FILE="${MEPASS_RELEASE_STORE_FILE}"
+          
+          if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
+            STORE_PW_FILE=$(mktemp)
+            echo -n "${MEPASS_RELEASE_STORE_PASSWORD}" > "$STORE_PW_FILE"
+            KEY_PW_FILE=$(mktemp)
+            echo -n "${MEPASS_RELEASE_KEY_PASSWORD:-${MEPASS_RELEASE_STORE_PASSWORD}}" > "$KEY_PW_FILE"
             
-            if [ -n "$STORE_FILE" ] && [ -f "$STORE_FILE" ]; then
-              # 用临时文件传递密码，避免 shell 转义问题和日志泄露
-              STORE_PW_FILE=$(mktemp)
-              echo -n "${MEPASS_RELEASE_STORE_PASSWORD}" > "$STORE_PW_FILE"
-              KEY_PW_FILE=$(mktemp)
-              echo -n "${MEPASS_RELEASE_KEY_PASSWORD:-${MEPASS_RELEASE_STORE_PASSWORD}}" > "$KEY_PW_FILE"
-              
-              "$APKSIGNER" sign \
-                --ks "$STORE_FILE" \
-                --ks-type JKS \
-                --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
-                --ks-pass "file:$STORE_PW_FILE" \
-                --key-pass "file:$KEY_PW_FILE" \
-                --v1-signing-enabled true \
-                --v2-signing-enabled true \
-                --v3-signing-enabled true \
-                --out "$FOUND_APK.signed" \
-                "$FOUND_APK" 2>&1 || {
-                  echo "apksigner JKS 签名失败，尝试转换为 PKCS12..."
-                  P12_FILE="${STORE_FILE%.jks}.p12"
-                  keytool -importkeystore \
-                    -srckeystore "$STORE_FILE" \
-                    -srcstoretype JKS \
-                    -srcstorepass:file "$STORE_PW_FILE" \
-                    -destkeystore "$P12_FILE" \
-                    -deststoretype PKCS12 \
-                    -deststorepass:file "$STORE_PW_FILE" 2>/dev/null && \
-                  "$APKSIGNER" sign \
-                    --ks "$P12_FILE" \
-                    --ks-type PKCS12 \
-                    --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
-                    --ks-pass "file:$STORE_PW_FILE" \
-                    --key-pass "file:$KEY_PW_FILE" \
-                    --v1-signing-enabled true \
-                    --v2-signing-enabled true \
-                    --v3-signing-enabled true \
-                    --out "$FOUND_APK.signed" \
-                    "$FOUND_APK" 2>&1
-                  rm -f "$P12_FILE"
-                }
-              rm -f "$STORE_PW_FILE" "$KEY_PW_FILE"
-              if [ -f "$FOUND_APK.signed" ]; then
-                mv "$FOUND_APK.signed" "$FOUND_APK"
-                echo "重新签名完成"
-              else
-                echo "[WARN] 重新签名失败，APK 可能没有有效签名"
-              fi
+            "$APKSIGNER" sign \
+              --ks "$STORE_FILE" \
+              --ks-type JKS \
+              --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
+              --ks-pass "file:$STORE_PW_FILE" \
+              --key-pass "file:$KEY_PW_FILE" \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --out "$SIGNED_APK" \
+              "$ALIGNED_APK" 2>&1 || {
+                echo "apksigner JKS 签名失败，尝试转换为 PKCS12..."
+                P12_FILE="${STORE_FILE%.jks}.p12"
+                keytool -importkeystore \
+                  -srckeystore "$STORE_FILE" \
+                  -srcstoretype JKS \
+                  -srcstorepass:file "$STORE_PW_FILE" \
+                  -destkeystore "$P12_FILE" \
+                  -deststoretype PKCS12 \
+                  -deststorepass:file "$STORE_PW_FILE" 2>/dev/null && \
+                "$APKSIGNER" sign \
+                  --ks "$P12_FILE" \
+                  --ks-type PKCS12 \
+                  --ks-key-alias "${MEPASS_RELEASE_KEY_ALIAS}" \
+                  --ks-pass "file:$STORE_PW_FILE" \
+                  --key-pass "file:$KEY_PW_FILE" \
+                  --v1-signing-enabled true \
+                  --v2-signing-enabled true \
+                  --v3-signing-enabled true \
+                  --out "$SIGNED_APK" \
+                  "$ALIGNED_APK" 2>&1
+                rm -f "$P12_FILE"
+              }
+            rm -f "$STORE_PW_FILE" "$KEY_PW_FILE"
+            
+            if [ -f "$SIGNED_APK" ]; then
+              echo "签名完成"
+              # 清理中间文件
+              rm -f "$ALIGNED_APK" "$UNSIGNED_APK"
             else
-              echo "[WARN] 找不到 keystore，跳过重新签名（AGP 原签名应仍有效）"
+              echo "ERROR: 签名失败"
+              exit 1
             fi
           else
-            echo "[WARN] 找不到 apksigner，跳过重新签名"
+            echo "ERROR: 找不到 keystore $STORE_FILE"
+            exit 1
           fi
           
           # 5) 验证最终 APK
           echo "=== 最终 APK 验证 ==="
-          echo "文件大小: $(stat -c%s "$FOUND_APK") bytes"
-          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
-            "$APKSIGNER" verify --verbose "$FOUND_APK" 2>&1 | grep -E "Verified using|Verified|ERROR|WARNING" || true
-          fi
-          echo "APK 路径: $FOUND_APK"
+          echo "文件大小: $(stat -c%s "$SIGNED_APK") bytes"
+          "$APKSIGNER" verify --verbose "$SIGNED_APK" 2>&1 | grep -E "Verified|ERROR|WARNING" || true
+          
+          # 验证签名后仍然保持对齐
+          echo "=== 签名后 zipalign 验证 ==="
+          "$ZIPALIGN" -c -p 4 "$SIGNED_APK" && echo "✓ 签名后仍保持对齐" || echo "⚠ 签名后对齐被破坏"
+          
+          echo "APK 路径: $SIGNED_APK"
 
       # ---- 保存混淆 mapping（用于安全团队 / 用户验证 ----
       - name: Collect release artifacts (APK + mapping + R8)
