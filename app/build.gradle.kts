@@ -122,6 +122,11 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
+    // 提供 Theme.AppCompat.* 主题资源（Compose Material3 需要 AppCompat 主题作为 base context，
+    // 否则在未显式引入 AppCompat 时 AAPT 会报 "Theme.AppCompat.Light.NoActionBar not found"，
+    // 纯 platform android:Theme.Material.Light.NoActionBar 在部分 ROM 上又会导致 Compose 首帧
+    // 属性缺失闪退）。AppCompat 稳定 + 体积小（~1.5MB），是最佳通用解。
+    implementation("androidx.appcompat:appcompat:1.6.1")
 
     // Compose
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
