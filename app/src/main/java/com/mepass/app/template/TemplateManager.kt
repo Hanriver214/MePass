@@ -112,6 +112,8 @@ object TemplateManager {
         }
 
         // 4. 计算完整性哈希（覆盖全部字段）
+        // 重要：createdAt 必须只取一次，保证哈希计算与 Template 字段使用同一值
+        val createdAt = System.currentTimeMillis()
         val integrityHash = IntegrityManager.computeIntegrityHash(
             version = Template.CURRENT_VERSION,
             name = name,
@@ -119,7 +121,7 @@ object TemplateManager {
             thresholdConfig = thresholdConfig,
             verificationHashes = verificationHashes,
             shamirShares = shamirShares,
-            createdAt = System.currentTimeMillis()
+            createdAt = createdAt
         )
 
         // 5. 清零主密钥
@@ -127,7 +129,7 @@ object TemplateManager {
 
         return Template(
             name = name,
-            createdAt = System.currentTimeMillis(),
+            createdAt = createdAt,
             questions = questions,
             thresholdConfig = thresholdConfig,
             integrityHash = integrityHash,
