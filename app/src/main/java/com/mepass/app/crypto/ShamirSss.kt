@@ -20,6 +20,10 @@ object ShamirSss {
     private val secureRandom = SecureRandom()
 
     // GF(2^8) 乘法/逆元用的对数/反对数表（生成多项式 0x11B，AES 同款）
+    // 生成元用 3 而非 2：2 在 GF(2^8)/0x11B 中的阶是 51（2^51=1），不是本原元，
+    // 用 2 只能覆盖 51/255 个域元素，会导致 gfInverse/gfDivide 对其余元素返回
+    // 错误结果，进而使 combine 还原出错误（且随分片子集变化）的秘密。
+    // 3 的阶是 255，是本原元，可覆盖全部非零元素。
     private val EXP = IntArray(256)
     private val LOG = IntArray(256)
 
@@ -28,7 +32,7 @@ object ShamirSss {
         for (i in 0..254) {
             EXP[i] = x
             LOG[x] = i
-            x = gfMultiply(x, 2)
+            x = gfMultiply(x, 3)
         }
         EXP[255] = EXP[0]  // 循环
     }
