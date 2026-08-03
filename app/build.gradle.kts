@@ -13,9 +13,9 @@ android {
         minSdk = 24
         // targetSdk 34：Android 14 当前主流，不要贸然升到 35
         targetSdk = 34
-        // 修复"点击即闪退"的版本号变更：本次修复闪退用 versionCode=2 / 1.0.1
-        versionCode = 2
-        versionName = "1.0.1"
+        // 修复"点击即闪退"的版本号变更：本次修复闪退用 versionCode=3 / 1.0.2
+        versionCode = 3
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -91,6 +91,24 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // 排除 argon2-jvm 和 JNA 打进 APK 的桌面端 native 库
+            // （.dylib / .dll / .a 在 Android 上无用且会导致定制 ROM 安装器解析 APK 时闪退）
+            excludes += listOf(
+                "**/darwin-aarch64/**",
+                "**/darwin-x86-64/**",
+                "**/win32-aarch64/**",
+                "**/win32-x86-64/**",
+                "**/win32-x86/**",
+                "**/aix-ppc/**",
+                "**/aix-ppc64/**",
+                "**/com/sun/jna/**",
+                "**/*.dylib",
+                "**/*.dll",
+                "**/*.a",
+                "**/README.md",
+                "**/DebugProbesKt.bin",
+                "**/kotlin-tooling-metadata.json"
+            )
         }
     }
     // Release 阻塞太多：单测数量多但多数测试断言是为未实现功能写的。为了先让 release 构建通过，
@@ -140,8 +158,9 @@ dependencies {
     // JSON serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 
-    // Argon2 password hashing
-    implementation("de.mkammerer:argon2-jvm:2.11")
+    // BouncyCastle：提供 Argon2id 纯 Java 实现（替代 argon2-jvm + JNA，后者在 Android 上不可用
+    // 且会把桌面端 .dylib/.dll 打进 APK 导致安装器闪退）
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.78.1")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

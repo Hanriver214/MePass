@@ -1,7 +1,7 @@
 package com.mepass.app.crypto
 
-import de.mkammerer.argon2.Argon2
-import de.mkammerer.argon2.Argon2Factory
+import org.bouncycastle.crypto.generators.Argon2BytesGenerator
+import org.bouncycastle.crypto.params.Argon2Parameters
 import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlin.experimental.xor
@@ -23,12 +23,6 @@ object Argon2Manager {
     private const val ARGON2_HASH_LENGTH = 32 // 字节 (256位)
     private const val PASSPHRASE_WORD_COUNT = 12
 
-    private val argon2: Argon2 = Argon2Factory.create(
-        Argon2Factory.Argon2Types.ARGON2id,
-        ARGON2_SALT_LENGTH,
-        ARGON2_HASH_LENGTH
-    )
-
     private val secureRandom = SecureRandom()
 
     // 4 类字符池，每类字符都经过可读性筛选：
@@ -44,21 +38,38 @@ object Argon2Manager {
     private const val SYMBOLS   = "!@#\$%^&*()-_=+[]{};:,./<>"
 
     /**
+     * BouncyCastle Argon2id 底层计算：用给定 salt 对密码字节做 Argon2id，返回 raw hash 字节
+     */
+    private fun argon2idHash(password: ByteArray, salt: ByteArray, hashLen: Int = ARGON2_HASH_LENGTH): ByteArray {
+        val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
+            .withIterations(ARGON2_ITERATIONS)
+            .withMemoryAsKB(ARGON2_MEMORY_KB)
+            .withParallelism(ARGON2_PARALLELISM)
+            .withSalt(salt)
+            .build()
+        val gen = Argon2BytesGenerator()
+        gen.init(params)
+        val out = ByteArray(hashLen)
+        gen.generateBytes(password, out)
+        return out
+    }
+
+    /**
      * 对答案进行哈希（用于验证数据存储）
      * 返回 Argon2 编码字符串（包含盐、参数、哈希）
+     * 格式: $argon2id$v=19$m=X,t=Y,p=Z$salt_b64$hash_b64
      */
     fun hashAnswer(normalizedAnswer: String): String {
-        val chars = normalizedAnswer.toCharArray()
+        val salt = ByteArray(ARGON2_SALT_LENGTH)
+        secureRandom.nextBytes(salt)
+        val pwBytes = normalizedAnswer.toByteArray(Charsets.UTF_8)
         try {
-            return argon2.hash(
-                ARGON2_ITERATIONS,
-                ARGON2_MEMORY_KB,
-                ARGON2_PARALLELISM,
-                chars
-            )
+            val hash = argon2idHash(pwBytes, salt)
+            val saltB64 = android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP)
+            val hashB64 = android.util.Base64.encodeToString(hash, android.util.Base64.NO_WRAP)
+            return "\$argon2id\$v=19\$m=$ARGON2_MEMORY_KB,t=$ARGON2_ITERATIONS,p=$ARGON2_PARALLELISM\$$saltB64\$$hashB64"
         } finally {
-            // 安全清除内存中的明文
-            chars.fill('\u0000')
+            pwBytes.fill(0)
         }
     }
 
@@ -66,38 +77,31 @@ object Argon2Manager {
      * 验证答案是否匹配存储的哈希
      */
     fun verifyAnswer(storedHash: String, normalizedAnswer: String): Boolean {
-        val chars = normalizedAnswer.toCharArray()
+        val parts = storedHash.split('$')
+        // parts[0]="" , parts[1]="argon2id", parts[2]="v=19", parts[3]="m=..,t=..,p=..", parts[4]=salt, parts[5]=hash
+        if (parts.size < 6) return false
+        val salt = android.util.Base64.decode(parts[4], android.util.Base64.NO_WRAP)
+        val storedHashBytes = android.util.Base64.decode(parts[5], android.util.Base64.NO_WRAP)
+        val pwBytes = normalizedAnswer.toByteArray(Charsets.UTF_8)
         try {
-            return argon2.verify(storedHash, chars)
+            val computed = argon2idHash(pwBytes, salt, storedHashBytes.size)
+            return computed.contentEquals(storedHashBytes)
         } finally {
-            chars.fill('\u0000')
+            pwBytes.fill(0)
         }
     }
 
     /**
      * 从规范化答案派生固定长度的密钥（字节数组）
      * 用于加密 Shamir 分片
-     *
-     * 注：mkammerer argon2-jvm 的 Argon2.hash 重载只接受 (t, m, p, char[], Charset)
-     * 或 (t, m, p, String, Charset)，不接受自定义 salt 字节数组；
-     * 所以我们将 salt 拼接到明文前面（格式 "salt_b64|answer"），然后对整体做
-     * Argon2id，再取 base64 尾部 hash 段解码 + SHA-256 裁剪到 32 字节作为密钥。
-     * 这样不依赖于内部 salt，同时仍可复现（同答案+同salt 必生成同密钥）。
+     * 使用给定 salt 做 Argon2id，直接返回 raw hash（32 字节）
      */
     fun deriveKeyFromAnswer(normalizedAnswer: String, salt: ByteArray): ByteArray {
-        val saltB64 = android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP)
-        val combined = "$saltB64|$normalizedAnswer"
-        val chars = combined.toCharArray()
+        val pwBytes = normalizedAnswer.toByteArray(Charsets.UTF_8)
         try {
-            val encoded = argon2.hash(
-                ARGON2_ITERATIONS,
-                ARGON2_MEMORY_KB,
-                ARGON2_PARALLELISM,
-                chars
-            )
-            return extractRawHashFromEncoded(encoded, ARGON2_HASH_LENGTH)
+            return argon2idHash(pwBytes, salt, ARGON2_HASH_LENGTH)
         } finally {
-            chars.fill('\u0000')
+            pwBytes.fill(0)
         }
     }
 
@@ -107,7 +111,6 @@ object Argon2Manager {
      */
     private fun extractRawHashFromEncoded(encoded: String, expectedLength: Int): ByteArray {
         val parts = encoded.split('$')
-        // parts[0]="" , parts[1]="argon2id", parts[2]="v=19", parts[3]="m=..,t=..,p=..", parts[4]=salt, parts[5]=hash
         if (parts.size >= 6) {
             val hashBase64 = parts[5]
             runCatching {
@@ -120,7 +123,6 @@ object Argon2Manager {
                 }
             }
         }
-        // 解码失败或长度不足：退回到对整个编码做 SHA-256
         return sha256(encoded.toByteArray()).copyOf(expectedLength)
     }
 
