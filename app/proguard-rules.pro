@@ -20,16 +20,20 @@
 -keep class androidx.navigation.compose.** { *; }
 -keep class androidx.activity.compose.** { *; }
 -keep class androidx.lifecycle.** { *; }
--keep @androidx.compose.runtime.Composable class * { *; }
+# 注意：@Composable 是 METHOD 级注解，不能写在 class 选择器位置。
+# Compose 保留规则完全通过上面的 runtime/ui/material3/navigation 包 keep 兜底。
 
 # ---- 3. Kotlinx 序列化（如果使用 @Serializable） ----
 -keepattributes *Annotation*, kotlin.Metadata
 -keep class kotlinx.serialization.** { *; }
 -keepclassmembers class **$$serializer { *; }
--keepclassmembers class @kotlinx.serialization.Serializable ** {
+# 注意：R8 不支持 "@annotation **" 这种带通配符的 annotation 匹配，
+#       所以这里用具体包范围（com.mepass.app 下 @Serializable 类）列出。
+-keepclassmembers @kotlinx.serialization.Serializable class com.mepass.app.** {
     <init>(...);
     *** component1();
     *** component2();
+    *** serializer();
 }
 
 # ---- 4. Argon2 加密库（JNI 和反射入口） ----
