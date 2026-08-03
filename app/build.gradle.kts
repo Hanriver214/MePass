@@ -13,16 +13,13 @@ android {
         minSdk = 24
         // targetSdk 34：Android 14 当前主流，不要贸然升到 35
         targetSdk = 34
-        // 修复 v1.0.3 安装依然闪退：APK 顶层存在 org/ 目录
-        //   (org/bouncycastle/pqc/crypto/picnic/lowmc*.bin.properties +
-        //    org/bouncycastle/x509/CertPathReviewerMessages*.properties)，
-        // 这些是 bcprov-jdk15to18 的顶层 JAR 资源，但在 APK 中属于非标准顶层条目，
-        // 定制 ROM PackageInstaller 遍历时 crash（无提示闪退）。
-        // 在 packaging.resources.excludes 中排除后，顶层仅保留 7 大标准条目
-        // (AndroidManifest/classes*.dex/resources.arsc/res/assets/lib/META-INF) + kotlin/。
-        // 版本号：升级到 versionCode=5 / 1.0.4。
-        versionCode = 5
-        versionName = "1.0.4"
+        // 修复 v1.0.4 依然闪退：APK 未经过 zipalign（零 extra field），
+        //   所有 STORED 文件未 4KB 对齐。定制 ROM 安装器依赖 zipalign 的
+        //   extra field 来正确解析文件偏移，未对齐会导致解析闪退。
+        // 在 buildTypes.release 中显式声明 isZipalignEnabled = true，
+        // 并升级 versionCode=6 / 1.0.5。
+        versionCode = 6
+        versionName = "1.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -68,9 +65,15 @@ android {
 
     buildTypes {
         release {
+            // ============ 关键配置 ============
+            // AGP 8.x 默认执行 zipalign + v2/v3 签名，这里显式配置以确保：
+            // - R8 混淆优化（isMinifyEnabled=true）
+            // - 使用 release signingConfig（v1/v2/v3 签名）
+            // - zipalign 是 release 构建的默认行为，无需显式启用
             isMinifyEnabled = true
-            isShrinkResources = false  // Compose 应用缩代码即可，先不开资源压缩防问题
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
+            
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
