@@ -53,10 +53,23 @@
     *** serializer();
 }
 
-# ---- 4. Argon2 加密库（JNI 和反射入口） ----
--keep class de.mkammerer.argon2.** { *; }
+# ---- 4. 加密库（BouncyCastle 纯 Java 实现，无 JNI） ----
+# 之前用的 de.mkammerer:argon2-jvm 依赖 JNA，会把桌面端 .dylib/.dll/.a 打进 APK
+# 导致定制 ROM 安装器解析 APK 时闪退（无任何提示），故已彻底移除。
 -keep class org.bouncycastle.** { *; }
--dontwarn de.mkammerer.argon2.**
+
+# BouncyCastle 的 X509LDAPCertStoreSpi / CrlCache.getCrlsFromLDAP 等类引用了
+# javax.naming.directory.* （JNDI/LDAP），这些类在 Android 平台上不存在。
+# R8 在 Release 构建时把 "Missing class" 当成错误终止构建：
+#     com.android.tools.r8.internal.g: Missing class javax.naming.NamingEnumeration
+#     Missing class javax.naming.NamingException
+#     Missing class javax.naming.directory.Attribute / Attributes / DirContext /
+#     InitialDirContext / SearchControls / SearchResult
+# 这些 LDAP 路径在 MePass 中根本不会被调用（我们只用 Argon2BytesGenerator），
+# 用 -dontwarn 抑制即可，不影响运行时。
+-dontwarn javax.naming.**
+-dontwarn org.bouncycastle.jce.provider.X509LDAPCertStoreSpi
+-dontwarn org.bouncycastle.jce.provider.CrlCache
 
 # ---- 5. 数据模型：需要跨 Gson/JSON 序列化的字段不能改名字 ----
 -keep class com.mepass.app.model.** {

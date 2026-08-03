@@ -13,9 +13,10 @@ android {
         minSdk = 24
         // targetSdk 34：Android 14 当前主流，不要贸然升到 35
         targetSdk = 34
-        // 修复"点击即闪退"的版本号变更：本次修复闪退用 versionCode=3 / 1.0.2
-        versionCode = 3
-        versionName = "1.0.2"
+        // 修复 v1.0.2 Release 构建失败（BouncyCastle 引用 javax.naming.* 在 Android 不存在导致 R8 报错）。
+        // 版本号：v1.0.2 tag 已存在但 release 构建失败无 APK 产物，故升级到 v1.0.3 / versionCode=4。
+        versionCode = 4
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
