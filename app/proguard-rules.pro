@@ -14,12 +14,29 @@
 # 【不要】加 -dontobfuscate；isMinifyEnabled=true 会自动开启混淆
 
 # ---- 2. Jetpack Compose 不能混淆的最小集合（否则 release 必崩） ----
+#   这里刻意不整包 keep（否则混淆就失去意义）；只 keep R8 已知反射入口
 -keep class androidx.compose.runtime.** { *; }
 -keep class androidx.compose.ui.** { *; }
 -keep class androidx.compose.material3.** { *; }
 -keep class androidx.navigation.compose.** { *; }
 -keep class androidx.activity.compose.** { *; }
 -keep class androidx.lifecycle.** { *; }
+# Compose 1.5.x 在 R8 里的已知保留规则：Kotlin lambda 作为 Composable 函数被内联后，
+# 如果它们的 invoke(Composer, int) 方法被改名，Composer 会在启动首帧找不到 slot table
+# 直接崩溃。保持所有 FunctionN / Function0..Function22 及其子类的 invoke / invoke-$N 方法名
+-keepclassmembers class * implements kotlin.jvm.functions.Function* {
+    public *** invoke(...);
+    public *** invoke-*(...);
+}
+# 修复 "点击即闪退" 的典型 R8 误删入口：Composable 匿名 SAM 在 release 中如果
+# INSTANCE/refl 被错误优化成无实例，会在 Activity 首帧 attachBaseContext 阶段崩溃
+-keepclassmembers class com.mepass.app.** {
+    *** *Lambda*(...);
+    *** *$*$*(...);
+}
+-keepclassmembers class **$WhenMappings {
+    <fields>;
+}
 # 注意：@Composable 是 METHOD 级注解，不能写在 class 选择器位置。
 # Compose 保留规则完全通过上面的 runtime/ui/material3/navigation 包 keep 兜底。
 

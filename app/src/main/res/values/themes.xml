@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.MePass" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+        Material 3 (Material You) + Compose 推荐使用 Theme.MaterialComponents.DayNight.NoActionBar.Bridge 作为 Activity 的 base theme。
+        原因：
+        - 如果用纯 platform android:Theme.Material.Light.NoActionBar，MaterialComponents
+          相关组件（Compose Material3 内部仍会依赖一些 themed 上下文属性）在部分 ROM 上
+          启动首帧会因找不到 colorPrimarySecondary 等属性而 Inflate 失败，导致闪退。
+        - Bridge 主题继承 platform Material，同时注入 MaterialComponents 颜色/属性，
+          与 Compose MaterialTheme.colorScheme 叠加使用最稳。
+    -->
+    <style name="Theme.MePass" parent="Theme.MaterialComponents.DayNight.NoActionBar.Bridge">
+        <!-- 让系统状态栏/导航栏默认深色模式下不做特殊着色，Compose 自己处理 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

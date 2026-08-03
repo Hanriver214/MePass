@@ -9,10 +9,13 @@ android {
 
     defaultConfig {
         applicationId = "com.mepass.app"
+        // minSdk 24：满足 coreLibraryDesugaring（java.time.*）最低要求，并且覆盖 99.5% 以上活跃设备
         minSdk = 24
+        // targetSdk 34：Android 14 当前主流，不要贸然升到 35
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        // 修复"点击即闪退"的版本号变更：本次修复闪退用 versionCode=2 / 1.0.1
+        versionCode = 2
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
