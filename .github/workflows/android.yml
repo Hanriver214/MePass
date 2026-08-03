@@ -142,11 +142,25 @@ jobs:
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
       # ---- 保存混淆 mapping（用于安全团队 / 用户验证 ----
-      - name: Collect release artifacts （APK + mapping + R8)
+      - name: Collect release artifacts (APK + mapping + R8)
         run: |
+          set -e
           mkdir -p release_out
-          cp -v app/build/outputs/apk/release/*.apk release_out/
-          cp -v app/build/outputs/mapping/release/mapping.txt release_out/mapping.txt 2>/dev/null || echo "[warn] mapping.txt 不存在（可能是 R8 未输出）
+          # 1) 拷贝 APK（Gradle 在未配置 signingConfig 时默认输出 "app-release-unsigned.apk"）
+          if ls app/build/outputs/apk/release/*.apk 1>/dev/null 2>&1; then
+            cp -v app/build/outputs/apk/release/*.apk release_out/
+          else
+            echo "ERROR: 没有找到任何 release APK"
+            ls -la app/build/outputs/apk/ 2>/dev/null || true
+            ls -la app/build/outputs/ 2>/dev/null || true
+            exit 1
+          fi
+          # 2) 拷贝 mapping.txt（R8 minifyEnabled=true 时才输出）
+          if [ -f app/build/outputs/mapping/release/mapping.txt ]; then
+            cp -v app/build/outputs/mapping/release/mapping.txt release_out/mapping.txt
+          else
+            echo "[warn] mapping.txt 不存在（R8 可能未运行或未输出）"
+          fi
           ls -lah release_out/
 
       # ---- SHA-256 校验和（用户可本地比对 APK 哈希）----
